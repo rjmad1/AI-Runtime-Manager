@@ -321,35 +321,28 @@ def cmd_install():
             set_windows_env("GEMINI_API_KEY", google_key)
             gemini_key = google_key
 
+    # Check if there are any missing keys for enabled providers
+    missing_any = False
     for p_name, p_info in providers.items():
-        if not p_info.get("enabled", False):
-            continue
-            
-        env_var = p_info.get("env_var")
-        current_val = get_windows_env(env_var)
-        
-        if current_val:
-            log("SUCCESS", f"Provider {p_name} ({env_var}) is already configured.")
-            configured += 1
-        else:
-            print(f"\n[{p_name.upper()}] Missing API Key ({env_var})")
-            print(f"  Info: {p_info.get('info')}")
-            key_input = input(f"  Please enter API Key for {p_name} (or press Enter to skip): ").strip()
-            
-            if key_input:
-                if validate_provider_key(p_name, key_input):
-                    set_windows_env(env_var, key_input)
-                    log("SUCCESS", f"Saved {env_var} to Windows User Environment Variables.")
-                    configured += 1
-                else:
-                    log("WARNING", f"Key entered for {p_name} looks invalid. Skipped.")
-                    skipped += 1
-            else:
-                log("INFO", f"Skipped {p_name}.")
-                skipped += 1
-                
-    log("INFO", f"Installation setup finished. Configured: {configured}, Skipped: {skipped}")
-    
+        if p_info.get("enabled", False):
+            env_var = p_info.get("env_var")
+            if not get_windows_env(env_var):
+                missing_any = True
+                break
+
+    if missing_any:
+        log("INFO", "Missing API credentials detected. Opening setup assistant in default browser...")
+        try:
+            # Spawn prompt_server.py in the same python environment
+            server_script = os.path.join(CORE_DIR, "prompt_server.py")
+            subprocess.run([sys.executable, server_script], check=True)
+            log("SUCCESS", "Completed credentials setup via web assistant.")
+        except Exception as e:
+            log("ERROR", f"Failed to run web configuration assistant: {e}")
+            log("INFO", "Resuming configuration compilation...")
+    else:
+        log("SUCCESS", "All enabled providers have configured API keys.")
+
     # Run configuration generation
     cmd_configure()
 
