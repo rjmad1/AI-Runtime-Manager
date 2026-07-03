@@ -6,50 +6,44 @@ This manager operates on a declarative basis: the only files you edit are `setti
 
 ---
 
-## Quick Start (Deploy in 3 Steps)
+## 🚀 Quick Start (Single-Command Install)
 
-### Step 1: Install & Set Up Credentials
-Double-click **`Install.bat`** (or run it from your command prompt). 
-- This automatically detects or installs Node.js, Python, Git, and `uv`.
-- Creates a local isolated virtual environment (`.venv`) for python server libraries.
-- Prompts you interactively for any missing API keys and saves them securely as persistent User Environment Variables.
+To deploy the entire workstation, dependencies, virtual environment, and configurations automatically on any clean Windows machine, open a PowerShell terminal and run:
 
-### Step 2: Start the Servers
-Run **`Manage.bat start`** (or double-click it) to spin up both LiteLLM and OpenClaw in harmony.
-- LiteLLM Proxy is launched in the background on port `4000`.
-- The manager polls the proxy health checker until it reports online.
-- OpenClaw is then launched in the foreground on port `18789`. Press `Ctrl+C` in the console window to stop both servers cleanly.
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/rjmad1/AI-Runtime-Manager/main/install.ps1 | iex"
+```
 
-### Step 3: Run Diagnostic Benchmarks
-Open a separate terminal and double-click **`Diagnose.bat`**.
-- This tests connection latency and completion integrity on all configured models.
-- It will automatically launch a visual, dark-themed diagnostics dashboard (`generated/health-report.html`) in your default web browser.
+### What this does:
+1. Resolves the installation folder at `~/AI-Runtime-Manager` and retrieves the code from GitHub.
+2. Checks for and installs system prerequisites (Git, Python 3.11+, Node.js LTS, and `uv`) automatically.
+3. Spawns a **Visual Browser Assistant** to configure API keys for your enabled AI providers securely on your local machine.
+4. Compiles LiteLLM routing configurations (`config.yaml`) and maps fallbacks dynamically.
+5. Automatically merges configurations with your active OpenClaw settings.
 
 ---
 
-## Entry Point Script Directory
+## Service Management Commands
 
-The following command wrappers are located in the root of the directory:
+Once installed, navigate to `~/AI-Runtime-Manager` and run the following batch command wrappers:
 
-*   **`Install.bat`** — Installs prerequisites, creates `.venv`, prompts for API keys, and compiles active configuration files.
-*   **`Manage.bat`** — Orchestrates stack processes:
-    *   `Manage.bat start` — Launches LiteLLM and OpenClaw.
-    *   `Manage.bat stop` — Safely kills active servers and frees ports.
-    *   `Manage.bat status` — Reports active PIDs and ports.
-    *   `Manage.bat configure` — Force recompiles configuration outputs.
-    *   `Manage.bat backup` — Compiles a timestamped zip of your settings.
-    *   `Manage.bat restore` — Interactively prompts and restores a backup.
-*   **`Diagnose.bat`** — Runs connection tests and displays the HTML benchmark dashboard.
-*   **`Repair.bat`** — Scavenges processes occupying ports 4000/18789, checks configuration schemas, and clears caches.
-*   **`Upgrade.bat`** — Pulls the latest LiteLLM packages via pip and updates OpenClaw globally.
-*   **`Uninstall.bat`** — Shuts down servers, deletes the virtual environment, and cleans configurations.
+*   **`Manage.bat start`** — Launches the LiteLLM Proxy in the background, polls for health, and boots the OpenClaw Gateway in the foreground.
+*   **`Manage.bat stop`** — Gracefully stops all active server processes and scavenges ports 4000/18789.
+*   **`Manage.bat status`** — Reports active process IDs and port bindings.
+*   **`Manage.bat configure`** — Compiles configuration outputs manually.
+*   **`Manage.bat backup`** — Creates a timestamped zip backup of your keys and YAML settings.
+*   **`Manage.bat restore`** — Interactively lists backups and performs a secure, Zip Slip protected restore.
+*   **`Diagnose.bat`** — Runs connection latency benchmarks against configured models and launches the HTML dashboard.
+*   **`Repair.bat`** — Automatically clears dangling processes, frees ports, audits config schemas, and clears caches.
+*   **`Upgrade.bat`** — Pulls the latest LiteLLM packages and updates the OpenClaw package version.
+*   **`Uninstall.bat`** — Shuts down servers, cleans environment configurations, and removes the workspace.
 
 ---
 
-## Configurations Guide
+## Configuration Files
 
-All configs reside inside the **`OpenClawManager/`** directory:
+All editable settings reside in the **`OpenClawManager/`** directory:
 
-1.  **`settings.yaml`**: Customize port bindings, log levels, backup paths, and enable or disable local Ollama integration.
-2.  **`providers.yaml`**: Enable/disable providers (e.g. Gemini, Groq, OpenRouter) and view console sign-up links.
-3.  **`models.yaml`**: Master list of supported models, context window limits, and fallback targets (e.g. falling back to groq or gemini if SambaNova fails).
+1.  **`settings.yaml`**: Customize port configurations, log levels, backup destinations, and Ollama integration settings.
+2.  **`providers.yaml`**: Toggle API provider integrations (Gemini, Groq, SambaNova, Cerebras, OpenRouter).
+3.  **`models.yaml`**: Configure models routing, context limits, and active fallback models (e.g. falling back from Gemini to Groq).
