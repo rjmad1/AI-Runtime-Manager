@@ -9,6 +9,7 @@ import time
 import platform
 import subprocess
 import urllib.request
+import psutil
 from typing import Any, Dict, List, Optional
 
 from config import (
@@ -43,26 +44,20 @@ def get_pids_on_port(port: int) -> List[int]:
     """Return PIDs listening on a given TCP port."""
     pids: set = set()
     try:
-        res = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, check=True)
-        pattern = re.compile(rf":{port}\s+\S+\s+LISTENING\s+(\d+)")
-        for line in res.stdout.splitlines():
-            m = pattern.search(line)
-            if m:
-                pids.add(int(m.group(1)))
+        for conn in psutil.net_connections(kind='tcp'):
+            if conn.laddr.port == port and conn.status == 'LISTEN':
+                if conn.pid is not None:
+                    pids.add(conn.pid)
     except Exception as e:
         log("WARNING", f"Could not list TCP connections: {e}")
     return list(pids)
 
 
 def is_pid_running(pid: Optional[int]) -> bool:
-    """Check whether a PID is currently active via tasklist."""
+    """Check whether a PID is currently active."""
     if not pid:
         return False
-    try:
-        res = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True)
-        return str(pid) in res.stdout
-    except Exception:
-        return False
+    return psutil.pid_exists(pid)
 
 
 def kill_process_tree(pid: int) -> bool:
@@ -71,13 +66,26 @@ def kill_process_tree(pid: int) -> bool:
         if not is_pid_running(pid):
             return True
         log("INFO", f"Terminating PID {pid} and its children gracefully...")
-        subprocess.run(["taskkill", "/T", "/PID", str(pid)], capture_output=True)
-        for _ in range(3):
-            time.sleep(1)
-            if not is_pid_running(pid):
-                return True
-        log("WARNING", f"PID {pid} still alive. Force killing...")
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+        
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+        
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        parent.terminate()
+        
+        gone, alive = psutil.wait_procs(children + [parent], timeout=3)
+        for p in alive:
+            log("WARNING", f"PID {p.pid} still alive. Force killing...")
+            try:
+                p.kill()
+            except psutil.NoSuchProcess:
+                pass
+        return True
+    except psutil.NoSuchProcess:
         return True
     except Exception as e:
         log("WARNING", f"Could not stop process PID {pid}: {e}")

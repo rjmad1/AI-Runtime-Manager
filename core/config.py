@@ -9,6 +9,7 @@ import subprocess
 import shutil
 import secrets
 import time
+import platform
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
@@ -94,42 +95,84 @@ def save_yaml(data: Dict[str, Any], path: str) -> None:
 # --- Windows persistent user variable helpers ---
 
 def get_windows_env(name: str) -> Optional[str]:
-    """Retrieve a Windows User environment variable from the registry."""
-    try:
-        cmd = f"[System.Environment]::GetEnvironmentVariable('{name}', 'User')"
-        res = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", cmd],
-            capture_output=True, text=True, check=True,
-        )
-        val = res.stdout.strip()
-        if val:
-            return val
-    except Exception:
-        pass
+    """Retrieve an environment variable (cross-platform)."""
+    if platform.system() == "Windows":
+        try:
+            cmd = f"[System.Environment]::GetEnvironmentVariable('{name}', 'User')"
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True, text=True, check=True,
+            )
+            val = res.stdout.strip()
+            if val:
+                return val
+        except Exception:
+            pass
+    else:
+        env_file = os.path.expanduser("~/.airm_env")
+        if os.path.exists(env_file):
+            try:
+                with open(env_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.startswith(f"export {name}="):
+                            # Extract value inside quotes if present
+                            val = line.split("=", 1)[1].strip()
+                            if val.startswith('"') and val.endswith('"'):
+                                return val[1:-1]
+                            if val.startswith("'") and val.endswith("'"):
+                                return val[1:-1]
+                            return val
+            except Exception:
+                pass
     return os.environ.get(name)
 
 
 def set_windows_env(name: str, value: str) -> bool:
-    """Set a Windows User environment variable (injection-safe).
-
-    Single quotes in name/value are escaped to prevent PowerShell injection.
-    """
-    try:
-        safe_name = name.replace("'", "''")
-        safe_value = value.replace("'", "''")
-        cmd = (
-            f"[System.Environment]::SetEnvironmentVariable("
-            f"'{safe_name}', '{safe_value}', 'User')"
-        )
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command", cmd],
-            capture_output=True, check=True,
-        )
-        os.environ[name] = value
-        return True
-    except Exception as e:
-        log("ERROR", f"Failed to save env variable {name}: {e}")
-        return False
+    """Set an environment variable (cross-platform)."""
+    if platform.system() == "Windows":
+        try:
+            safe_name = name.replace("'", "''")
+            safe_value = value.replace("'", "''")
+            cmd = (
+                f"[System.Environment]::SetEnvironmentVariable("
+                f"'{safe_name}', '{safe_value}', 'User')"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output=True, check=True,
+            )
+            os.environ[name] = value
+            return True
+        except Exception as e:
+            log("ERROR", f"Failed to save env variable {name}: {e}")
+            return False
+    else:
+        env_file = os.path.expanduser("~/.airm_env")
+        try:
+            lines = []
+            if os.path.exists(env_file):
+                with open(env_file, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            
+            new_lines = []
+            found = False
+            for line in lines:
+                if line.startswith(f"export {name}="):
+                    new_lines.append(f'export {name}="{value}"\n')
+                    found = True
+                else:
+                    new_lines.append(line)
+            if not found:
+                new_lines.append(f'export {name}="{value}"\n')
+                
+            with open(env_file, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+            
+            os.environ[name] = value
+            return True
+        except Exception as e:
+            log("ERROR", f"Failed to save env variable {name}: {e}")
+            return False
 
 
 # --- Configuration Compilation Helpers ---
