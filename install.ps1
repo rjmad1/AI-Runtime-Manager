@@ -41,39 +41,55 @@ if (Test-Path $targetDir) {
     }
 }
 
-# 2. Download code base from GitHub
+# 2. Retrieve codebase (Git Clone first for private repository support, fallback to Zip download)
+$repoUrl = "https://github.com/rjmad1/AI-Runtime-Manager.git"
 $zipUrl = "https://github.com/rjmad1/AI-Runtime-Manager/archive/refs/heads/main.zip"
 $tempZip = Join-Path $env:TEMP "AI-Runtime-Manager.zip"
 $tempExtract = Join-Path $env:TEMP "AI-Runtime-Manager-extract"
 
-Log-Info "Downloading latest release package from GitHub..."
-try {
-    # Ensure TLS 1.2 is used
-    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $zipUrl -OutFile $tempZip -UseBasicParsing
-    Log-Success "Download completed successfully."
-} catch {
-    Log-Error "Failed to download code package: $_"
-    Exit 1
+Log-Info "Retrieving latest release package from GitHub..."
+$retrievalSuccess = $false
+
+# Try Git Clone first (supports SSH / Git Credential Helper for private repositories)
+$gitPath = Get-Command git -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Definition
+if ($gitPath) {
+    Log-Info "Git detected. Attempting to clone repository..."
+    try {
+        if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force -ErrorAction SilentlyContinue }
+        Start-Process git -ArgumentList "clone $repoUrl `"$targetDir`"" -NoNewWindow -Wait -ErrorAction Stop
+        if (Test-Path (Join-Path $targetDir "core\bootstrap.ps1")) {
+            Log-Success "Repository cloned successfully via Git to: $targetDir"
+            $retrievalSuccess = $true
+        }
+    } catch {
+        Log-Warn "Git clone failed. Falling back to HTTP zip download..."
+    }
 }
 
-# 3. Extract Archive
-Log-Info "Extracting files to installation folder..."
-try {
-    if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue }
-    Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
-    
-    # Move and rename target folder
-    $extractedFolder = Join-Path $tempExtract "AI-Runtime-Manager-main"
-    Move-Item -Path $extractedFolder -Destination $targetDir -Force
-    
-    # Cleanup temp extraction
-    Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-    Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
-    Log-Success "Files extracted successfully to: $targetDir"
-} catch {
-    Log-Error "Extraction failed: $_"
-    Exit 1
+if (-not $retrievalSuccess) {
+    Log-Info "Downloading package archive zip..."
+    try {
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $zipUrl -OutFile $tempZip -UseBasicParsing
+        Log-Success "Download completed successfully."
+        
+        Log-Info "Extracting files to installation folder..."
+        if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue }
+        Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
+        
+        # Move extracted files
+        if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force -ErrorAction SilentlyContinue }
+        $extractedFolder = Join-Path $tempExtract "AI-Runtime-Manager-main"
+        Move-Item -Path $extractedFolder -Destination $targetDir -Force
+        
+        # Cleanup
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+        Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
+        Log-Success "Files extracted successfully to: $targetDir"
+    } catch {
+        Log-Error "Failed to download code package: $_"
+        Exit 1
+    }
 }
 
 # 4. Invoke Bootstrapper & Installer
