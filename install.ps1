@@ -105,7 +105,7 @@ if (Test-Path ".\.venv\Scripts\python.exe") {
 Log-Success "=============================================="
 Log-Success "    OpenClaw Workstation Installed Successfully!"
 Log-Success "=============================================="
-Log-Info "You can now manage your system using the following commands inside $targetDir:"
+Log-Info "You can now manage your system using the following commands inside $targetDir"
 Log-Info "  .\Manage.bat start   - Start LiteLLM and OpenClaw"
 Log-Info "  .\Manage.bat stop    - Terminate active servers"
 Log-Info "  .\Diagnose.bat       - Run connection latency benchmarks"
