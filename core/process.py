@@ -48,8 +48,25 @@ def get_pids_on_port(port: int) -> List[int]:
             if conn.laddr.port == port and conn.status == 'LISTEN':
                 if conn.pid is not None:
                     pids.add(conn.pid)
+        return list(pids)
+    except psutil.AccessDenied:
+        pass
     except Exception as e:
-        log("WARNING", f"Could not list TCP connections: {e}")
+        log("WARNING", f"Could not list TCP connections via psutil: {e}")
+
+    # Fallback for Windows without elevation
+    if platform.system() == "Windows":
+        try:
+            out = subprocess.check_output(["netstat", "-ano"], text=True)
+            for line in out.splitlines():
+                if f":{port}" in line and "LISTEN" in line:
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        pid = int(parts[-1])
+                        if pid > 0:
+                            pids.add(pid)
+        except Exception as e:
+            log("WARNING", f"netstat fallback failed: {e}")
     return list(pids)
 
 
@@ -123,12 +140,16 @@ def _spawn_litellm(litellm_port: int) -> subprocess.Popen:
             creationflags=litellm_flags, close_fds=True,
         )
     except Exception as e:
+        litellm_log.close()
         log("ERROR", f"Failed to spawn LiteLLM daemon: {e}")
-        sys.exit(1)
+        raise RuntimeError("LiteLLM daemon failed to spawn.")
 
     log("INFO", "Polling LiteLLM Proxy readiness...")
     ready = False
     for _ in range(30):
+        if litellm_proc.poll() is not None:
+            log("ERROR", f"LiteLLM daemon exited prematurely with code {litellm_proc.returncode}")
+            raise RuntimeError("LiteLLM daemon crashed during startup.")
         try:
             req = urllib.request.Request(f"http://localhost:{litellm_port}/health/readiness")
             with urllib.request.urlopen(req, timeout=1.0) as res:
@@ -176,13 +197,18 @@ def _spawn_openclaw(openclaw_port: int, discovery: Any, litellm_pid: int) -> sub
             creationflags=openclaw_flags, close_fds=True,
         )
     except Exception as e:
+        openclaw_log.close()
         log("ERROR", f"Failed to spawn OpenClaw daemon: {e}")
         kill_process_tree(litellm_pid)
-        sys.exit(1)
+        raise RuntimeError("OpenClaw daemon failed to spawn.")
 
     log("INFO", "Polling OpenClaw Gateway readiness...")
     oc_ready = False
     for _ in range(10):
+        if openclaw_proc.poll() is not None:
+            log("ERROR", f"OpenClaw daemon exited prematurely with code {openclaw_proc.returncode}")
+            kill_process_tree(litellm_pid)
+            raise RuntimeError("OpenClaw daemon crashed during startup.")
         if get_pids_on_port(openclaw_port):
             oc_ready = True
             break
@@ -212,10 +238,7 @@ def cmd_start() -> None:
     if settings.get("lifecycle", {}).get("auto_cleanup_ports", True):
         scavenge_ports([litellm_port, openclaw_port])
 
-    cmd_configure()
-
-    # Setup process env
-    os.environ["LITELLM_API_KEY"] = litellm_key
+    # Setup process env for configuration injection
     os.environ["OPENCLAW_GATEWAY_PORT"] = str(openclaw_port)
     os.environ["PYTHONIOENCODING"] = "utf-8"
     os.environ["PYTHONUTF8"] = "1"
@@ -227,6 +250,13 @@ def cmd_start() -> None:
             val = get_windows_env(var)
             if val:
                 os.environ[var] = val
+
+    cmd_configure()
+
+    # Reload settings after cmd_configure to pick up rotated litellm key
+    settings = load_yaml(SETTINGS_PATH)
+    litellm_key = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
+    os.environ["LITELLM_API_KEY"] = litellm_key
 
     litellm_proc = _spawn_litellm(litellm_port)
     openclaw_proc = _spawn_openclaw(openclaw_port, discovery, litellm_proc.pid)

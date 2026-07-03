@@ -35,11 +35,11 @@ _discovery_cache_time: float = 0
 _DISCOVERY_TTL_SECONDS: int = 30
 
 
-def _get_cached_discovery() -> Dict[str, Any]:
+def _get_cached_discovery(force: bool = False) -> Dict[str, Any]:
     """Return cached discovery results, refreshing after TTL expires."""
     global _discovery_cache, _discovery_cache_time
     now = time.time()
-    if _discovery_cache is not None and (now - _discovery_cache_time) < _DISCOVERY_TTL_SECONDS:
+    if not force and _discovery_cache is not None and (now - _discovery_cache_time) < _DISCOVERY_TTL_SECONDS:
         return _discovery_cache
     _discovery_cache = discovery.run_all_discovery(manager.SETTINGS_PATH)
     _discovery_cache_time = now
@@ -222,7 +222,7 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
                     has_keys = True
                     break
 
-        discovery_data = _get_cached_discovery()
+        discovery_data = _get_cached_discovery(force=True)
         ollama_models = discovery_data.get("ollama", {}).get("models", [])
 
         if not has_keys and not ollama_models:

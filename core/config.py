@@ -308,10 +308,10 @@ def _sync_active_config(settings: Dict[str, Any], openclaw_cfg: Dict[str, Any], 
     existing_data: Dict[str, Any] = {}
 
     if os.path.exists(active_claw_path):
-        shutil.copy2(active_claw_path, active_claw_path + ".bak")
         try:
             with open(active_claw_path, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
+            shutil.copy2(active_claw_path, active_claw_path + ".bak")
         except Exception as e:
             log("WARNING", f"Corrupted active config: {e}. Re-initializing.")
 
@@ -370,7 +370,7 @@ def cmd_configure() -> None:
 
     if not settings or not providers or not models_reg:
         log("ERROR", "YAML settings files are missing or corrupted. Run 'Repair.bat' to restore them.")
-        sys.exit(1)
+        raise RuntimeError("YAML settings files are missing or corrupted.")
 
     # Rotate default LiteLLM API key on first configure
     litellm_key = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
