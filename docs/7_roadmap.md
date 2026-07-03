@@ -1,37 +1,8 @@
-# AIRM Long-Term Capabilities & Development Roadmap
+| **Roadmap Area**                                                  | **Goal**                                                                                         | **Planned Implementation**                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Cross-Platform Abstraction Layer (macOS & Linux Support)**   | Port AIRM from a Windows-only installer into a cross-platform daemon lifecycle manager.          | • Abstract process management from Windows-specific utilities (`taskkill`, `netstat`) to cross-platform Python libraries such as `psutil`.<br>• Rewrite PowerShell bootstrap scripts (`bootstrap.ps1`, `install.ps1`) as Bash/Zsh scripts.<br>• Replace Windows Registry-based environment variable storage (`System.Environment`) with platform-agnostic mechanisms such as `~/.pam_environment`, `.bashrc`, or an encrypted file-based secrets vault. |
+| **2. Plug-and-Play Provider Extensibility (Plugin Architecture)** | Enable developers to add custom API providers without modifying the core configuration compiler. | • Introduce a `BaseProviderValidator` base class with standardized validation hooks.<br>• Support third-party plugins as standalone modules under `core/plugins/`.<br>• Dynamically load provider-specific endpoint templates, authentication schemes, and latency diagnostic models.                                                                                                                                                                   |
+| **3. Release Management & Semantic Versioning**                   | Transition from mono-branch development to a structured release engineering process.             | • Adopt Semantic Versioning (`vM.N.P`).<br>• Configure GitHub Actions to automatically generate draft releases and standardized changelogs.<br>• Add an update notification system in the Visual Control Center that tracks tagged releases.                                                                                                                                                                                                            |
+| **4. Real-Time WebSocket Push Logging**                           | Replace REST-based polling with efficient, real-time log streaming.                              | • Migrate the dashboard backend to native WebSocket communication.<br>• Implement a background queue reader that streams `stdout` and `stderr` from LiteLLM and OpenClaw directly to the browser without polling.                                                                                                                                                                                                                                       |
 
-This document outlines the planned long-term capabilities and developmental roadmap for the AI Runtime Manager (AIRM). 
-
-> [!IMPORTANT]
-> **Status:** The capabilities described below are **not yet implemented**. They represent future enhancement opportunities planned to evolve the workspace from a local workstation installer into a production-grade, enterprise-ready multi-platform developer environment.
-
----
-
-## 🗺️ Long-Term Development Roadmap
-
-### 1. Cross-Platform Abstraction Layer (macOS & Linux Support)
-*   **Goal:** Port AIRM from a Windows-only installer into a cross-platform daemon lifecycle manager.
-*   **Planned Implementation:**
-    *   Abstract process management out of Windows-specific toolsets (like `taskkill` and `netstat`) into native Python shell abstractions or cross-platform utilities (e.g., `psutil`).
-    *   Rewrite PowerShell bootstrap routines (`bootstrap.ps1` and `install.ps1`) into bash/zsh shell scripts.
-    *   Transition environment variable storage from Windows Registry (`[System.Environment]`) to platform-agnostic configurations (`~/.pam_environment`, `.bashrc`, or a local encrypted file-based secrets vault).
-
-### 2. Plug-and-Play Provider Extensibility (Plugin Architecture)
-*   **Goal:** Allow developers to register custom API providers without altering core configuration compilation logic.
-*   **Planned Implementation:**
-    *   Implement a base validator class (`BaseProviderValidator`) with standard interface hooks.
-    *   Allow third-party plugins to be registered as standalone modules in a `core/plugins/` directory.
-    *   Support dynamic loading of custom templates for endpoint URLs, authorization schemes, and latency diagnostic models.
-
-### 3. Release Management and Semantic Versioning
-*   **Goal:** Move away from mono-branch development to structured release engineering.
-*   **Planned Implementation:**
-    *   Adopt strict semantic versioning (`vM.N.P`) for updates.
-    *   Configure GitHub Actions workflows to auto-generate draft releases and compile standard change logs.
-    *   Implement an update-notifier in the Visual Control Center pointing to tag releases.
-
-### 4. Real-Time WebSockets Push Logging
-*   **Goal:** Replace REST polling log streams with low-overhead, real-time logging.
-*   **Planned Implementation:**
-    *   Transition dashboard backend to handle WebSocket frames.
-    *   Utilize a background thread loop with a queue reader to push stdout/stderr logs from LiteLLM and OpenClaw immediately to the browser without polling requests.
+> **Status:** **Planned / Not Yet Implemented** – These capabilities represent future enhancements intended to evolve AIRM from a local workstation installer into a production-grade, enterprise-ready, multi-platform developer environment.
