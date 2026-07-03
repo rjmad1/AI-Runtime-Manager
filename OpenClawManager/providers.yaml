@@ -1,0 +1,54 @@
+# API Providers Configuration
+# Enable or disable AI providers.
+# API keys themselves must be stored in Windows Environment Variables.
+# The installer will automatically prompt for missing keys for enabled providers.
+
+gemini:
+  enabled: true
+  env_var: "GEMINI_API_KEY"
+  info: "Free tier available at Google AI Studio (https://aistudio.google.com/)"
+
+groq:
+  enabled: true
+  env_var: "GROQ_API_KEY"
+  info: "Free tier available at Groq Console (https://console.groq.com/)"
+
+sambanova:
+  enabled: true
+  env_var: "SAMBANOVA_API_KEY"
+  info: "Free API key available at SambaNova Cloud (https://cloud.sambanova.ai/)"
+
+cerebras:
+  enabled: true
+  env_var: "CEREBRAS_API_KEY"
+  info: "Free API key available at Cerebras Developer Console (https://cloud.cerebras.ai/)"
+
+openrouter:
+  enabled: true
+  env_var: "OPENROUTER_API_KEY"
+  info: "Sign up at OpenRouter (https://openrouter.ai/). Free account gives access to free models."
+
+mistral:
+  enabled: false
+  env_var: "MISTRAL_API_KEY"
+  info: "Sign up at Mistral Console (https://console.mistral.ai/). Note: Requires free credits or billing profile."
+
+together:
+  enabled: false
+  env_var: "TOGETHER_API_KEY"
+  info: "Sign up at Together AI (https://www.together.ai/). Offers $25 free credits upon signup."
+
+fireworks:
+  enabled: false
+  env_var: "FIREWORKS_API_KEY"
+  info: "Sign up at Fireworks AI (https://fireworks.ai/). Offers $1 free credits upon signup."
+
+deepseek:
+  enabled: false
+  env_var: "DEEPSEEK_API_KEY"
+  info: "Sign up at DeepSeek Console (https://platform.deepseek.com/). Offers free credits upon signup."
+
+moonshot:
+  enabled: false
+  env_var: "MOONSHOT_API_KEY"
+  info: "Sign up at Moonshot Console (https://platform.moonshot.cn/). Offers free credits upon signup."

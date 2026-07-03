@@ -1,0 +1,24 @@
+@echo off
+setlocal
+
+if "%~1"=="" (
+    echo ==============================================
+    echo      OpenClaw Workstation Lifecycle Manager
+    echo ==============================================
+    echo Usage:
+    echo   Manage.bat start     - Start LiteLLM + OpenClaw servers
+    echo   Manage.bat stop      - Force stop all running servers
+    echo   Manage.bat status    - Check running components status
+    echo   Manage.bat configure - Regenerate configuration files
+    echo   Manage.bat backup    - Create timestamped configuration backup
+    echo   Manage.bat restore   - Interactively restore a configuration
+    echo ==============================================
+    exit /b 0
+)
+
+if not exist "%~dp0.venv\Scripts\python.exe" (
+    echo [ERROR] Virtual environment not found. Please run Install.bat first!
+    exit /b 1
+)
+
+"%~dp0.venv\Scripts\python.exe" "%~dp0core\manager.py" %*

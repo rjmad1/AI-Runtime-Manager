@@ -1,0 +1,28 @@
+# OpenClaw Workstation Manager Git Ignore
+
+# Local Python virtual environment
+.venv/
+venv/
+ENV/
+
+# Output and process logs
+logs/
+*.log
+
+# Dynamically generated runtime configurations (build artifacts)
+generated/
+
+# Configuration backups
+backups/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE configurations
+.idea/
+.vscode/
+
+# Temporary backups
+*.bak
