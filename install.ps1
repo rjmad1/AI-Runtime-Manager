@@ -5,39 +5,39 @@
 
 $ErrorActionPreference = "Stop"
 
-function Log-Info ($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
-function Log-Success ($msg) { Write-Host "[SUCCESS] $msg" -ForegroundColor Green }
-function Log-Warn ($msg) { Write-Host "[WARNING] $msg" -ForegroundColor Yellow }
-function Log-Error ($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red }
+function Write-InfoLog ($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
+function Write-SuccessLog ($msg) { Write-Host "[SUCCESS] $msg" -ForegroundColor Green }
+function Write-WarnLog ($msg) { Write-Host "[WARNING] $msg" -ForegroundColor Yellow }
+function Write-ErrorLog ($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red }
 
 Clear-Host
-Log-Info "=========================================================="
-Log-Info "    OpenClaw Workstation AI Runtime Manager (AIRM)"
-Log-Info "=========================================================="
-Log-Info "Initializing zero-touch background installer..."
+Write-InfoLog "=========================================================="
+Write-InfoLog "    OpenClaw Workstation AI Runtime Manager (AIRM)"
+Write-InfoLog "=========================================================="
+Write-InfoLog "Initializing zero-touch background installer..."
 
 # 1. Resolve Installation Directory
 $targetDir = Join-Path $Home "AI-Runtime-Manager"
-Log-Info "Target installation path resolved to: $targetDir"
+Write-InfoLog "Target installation path resolved to: $targetDir"
 
 if (Test-Path $targetDir) {
-    Log-Warn "An existing installation was found at $targetDir."
+    Write-WarnLog "An existing installation was found at $targetDir."
     $choice = Read-Host "Would you like to overwrite it and perform a fresh install? (y/n)"
     if ($choice.ToLower().Trim() -eq 'y' -or $choice.ToLower().Trim() -eq 'yes') {
-        Log-Info "Cleaning up old installation..."
+        Write-InfoLog "Cleaning up old installation..."
         try {
             $pids = @()
             Get-NetTCPConnection -LocalPort 4000, 18789 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
                 $pids += $_.OwningProcess
             }
             if ($pids.Count -gt 0) {
-                Log-Info "Stopping active servers on ports 4000/18789..."
+                Write-InfoLog "Stopping active servers on ports 4000/18789..."
                 Stop-Process -Id $pids -Force -ErrorAction SilentlyContinue
             }
         } catch {}
         Remove-Item $targetDir -Recurse -Force -ErrorAction SilentlyContinue
     } else {
-        Log-Info "Installation cancelled by user."
+        Write-InfoLog "Installation cancelled by user."
         Exit 0
     }
 }
@@ -48,32 +48,32 @@ $zipUrl = "https://github.com/rjmad1/AI-Runtime-Manager/archive/refs/heads/main.
 $tempZip = Join-Path $env:TEMP "AI-Runtime-Manager.zip"
 $tempExtract = Join-Path $env:TEMP "AI-Runtime-Manager-extract"
 
-Log-Info "Retrieving latest release packages from GitHub..."
+Write-InfoLog "Retrieving latest release packages from GitHub..."
 $retrievalSuccess = $false
 
 $gitPath = Get-Command git -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Definition
 if ($gitPath) {
-    Log-Info "Git detected. Cloning repository..."
+    Write-InfoLog "Git detected. Cloning repository..."
     try {
         if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force -ErrorAction SilentlyContinue }
         Start-Process git -ArgumentList "clone $repoUrl `"$targetDir`"" -NoNewWindow -Wait -ErrorAction Stop
         if (Test-Path (Join-Path $targetDir "core\bootstrap.ps1")) {
-            Log-Success "Repository cloned successfully via Git to: $targetDir"
+            Write-SuccessLog "Repository cloned successfully via Git to: $targetDir"
             $retrievalSuccess = $true
         }
     } catch {
-        Log-Warn "Git clone failed. Falling back to HTTP zip download..."
+        Write-WarnLog "Git clone failed. Falling back to HTTP zip download..."
     }
 }
 
 if (-not $retrievalSuccess) {
-    Log-Info "Downloading package archive zip..."
+    Write-InfoLog "Downloading package archive zip..."
     try {
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest -Uri $zipUrl -OutFile $tempZip -UseBasicParsing
-        Log-Success "Download completed successfully."
+        Write-SuccessLog "Download completed successfully."
         
-        Log-Info "Extracting files to installation folder..."
+        Write-InfoLog "Extracting files to installation folder..."
         if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue }
         Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
         
@@ -83,39 +83,39 @@ if (-not $retrievalSuccess) {
         
         Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
         Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
-        Log-Success "Files extracted successfully to: $targetDir"
+        Write-SuccessLog "Files extracted successfully to: $targetDir"
     } catch {
-        Log-Error "Failed to download code package: $_"
+        Write-ErrorLog "Failed to download code package: $_"
         Exit 1
     }
 }
 
 # 4. Invoke Bootstrapper & Installer
-Log-Info "Navigating to installation folder..."
+Write-InfoLog "Navigating to installation folder..."
 Set-Location $targetDir
 
 # Ensure logs folder exists
 New-Item -ItemType Directory -Force -Path ".\logs" | Out-Null
 
-Log-Info "Invoking low-level bootstrapper silently (logging to .\logs\installer.log)..."
+Write-InfoLog "Invoking low-level bootstrapper silently (logging to .\logs\installer.log)..."
 try {
     # Run bootstrap silently and redirect logs
     powershell -ExecutionPolicy Bypass -File ".\core\bootstrap.ps1" *>> ".\logs\installer.log"
 } catch {
-    Log-Error "Bootstrapper failed. Check .\logs\installer.log for details."
+    Write-ErrorLog "Bootstrapper failed. Check .\logs\installer.log for details."
     Exit 1
 }
 
-Log-Info "Launching Web Guided Assistant..."
+Write-InfoLog "Launching Web Guided Assistant..."
 if (Test-Path ".\.venv\Scripts\python.exe") {
     try {
         # Launch prompt_server in the foreground as Web Control
         & ".\.venv\Scripts\python.exe" ".\core\manager.py" install
     } catch {
-        Log-Error "Control assistant exited with error: $_"
+        Write-ErrorLog "Control assistant exited with error: $_"
         Exit 1
     }
 } else {
-    Log-Error "Virtual environment python was not found after bootstrap setup!"
+    Write-ErrorLog "Virtual environment python was not found after bootstrap setup!"
     Exit 1
 }

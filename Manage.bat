@@ -10,8 +10,12 @@ if "%~1"=="" (
     echo   Manage.bat stop      - Force stop all running servers
     echo   Manage.bat status    - Check running components status
     echo   Manage.bat configure - Regenerate configuration files
+    echo   Manage.bat diagnose  - Run latency connectivity benchmarks
+    echo   Manage.bat repair    - Run self-healing and check prerequisites
     echo   Manage.bat backup    - Create timestamped configuration backup
     echo   Manage.bat restore   - Interactively restore a configuration
+    echo   Manage.bat upgrade   - Upgrade python and npm dependencies
+    echo   Manage.bat uninstall - Uninstall the stack and clean local files
     echo ==============================================
     exit /b 0
 )
