@@ -10,9 +10,11 @@ function Log-Success ($msg) { Write-Host "[SUCCESS] $msg" -ForegroundColor Green
 function Log-Warn ($msg) { Write-Host "[WARNING] $msg" -ForegroundColor Yellow }
 function Log-Error ($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red }
 
-Log-Info "=============================================="
-Log-Info "    OpenClaw Workstation Installer (UV-Style)"
-Log-Info "=============================================="
+Clear-Host
+Log-Info "=========================================================="
+Log-Info "    OpenClaw Workstation AI Runtime Manager (AIRM)"
+Log-Info "=========================================================="
+Log-Info "Initializing zero-touch background installer..."
 
 # 1. Resolve Installation Directory
 $targetDir = Join-Path $Home "AI-Runtime-Manager"
@@ -23,7 +25,6 @@ if (Test-Path $targetDir) {
     $choice = Read-Host "Would you like to overwrite it and perform a fresh install? (y/n)"
     if ($choice.ToLower().Trim() -eq 'y' -or $choice.ToLower().Trim() -eq 'yes') {
         Log-Info "Cleaning up old installation..."
-        # Stop any running processes on default ports before deleting
         try {
             $pids = @()
             Get-NetTCPConnection -LocalPort 4000, 18789 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
@@ -41,19 +42,18 @@ if (Test-Path $targetDir) {
     }
 }
 
-# 2. Retrieve codebase (Git Clone first for private repository support, fallback to Zip download)
+# 2. Retrieve codebase
 $repoUrl = "https://github.com/rjmad1/AI-Runtime-Manager.git"
 $zipUrl = "https://github.com/rjmad1/AI-Runtime-Manager/archive/refs/heads/main.zip"
 $tempZip = Join-Path $env:TEMP "AI-Runtime-Manager.zip"
 $tempExtract = Join-Path $env:TEMP "AI-Runtime-Manager-extract"
 
-Log-Info "Retrieving latest release package from GitHub..."
+Log-Info "Retrieving latest release packages from GitHub..."
 $retrievalSuccess = $false
 
-# Try Git Clone first (supports SSH / Git Credential Helper for private repositories)
 $gitPath = Get-Command git -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Definition
 if ($gitPath) {
-    Log-Info "Git detected. Attempting to clone repository..."
+    Log-Info "Git detected. Cloning repository..."
     try {
         if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force -ErrorAction SilentlyContinue }
         Start-Process git -ArgumentList "clone $repoUrl `"$targetDir`"" -NoNewWindow -Wait -ErrorAction Stop
@@ -77,12 +77,10 @@ if (-not $retrievalSuccess) {
         if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue }
         Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
         
-        # Move extracted files
         if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force -ErrorAction SilentlyContinue }
         $extractedFolder = Join-Path $tempExtract "AI-Runtime-Manager-main"
         Move-Item -Path $extractedFolder -Destination $targetDir -Force
         
-        # Cleanup
         Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
         Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
         Log-Success "Files extracted successfully to: $targetDir"
@@ -96,33 +94,28 @@ if (-not $retrievalSuccess) {
 Log-Info "Navigating to installation folder..."
 Set-Location $targetDir
 
-Log-Info "Invoking dependency bootstrapper..."
+# Ensure logs folder exists
+New-Item -ItemType Directory -Force -Path ".\logs" | Out-Null
+
+Log-Info "Invoking low-level bootstrapper silently (logging to .\logs\installer.log)..."
 try {
-    powershell -ExecutionPolicy Bypass -File ".\core\bootstrap.ps1"
+    # Run bootstrap silently and redirect logs
+    powershell -ExecutionPolicy Bypass -File ".\core\bootstrap.ps1" *>> ".\logs\installer.log"
 } catch {
-    Log-Error "Bootstrapper failed: $_"
+    Log-Error "Bootstrapper failed. Check .\logs\installer.log for details."
     Exit 1
 }
 
-Log-Info "Starting interactive configuration and API keys validation assistant..."
+Log-Info "Launching Web Guided Assistant..."
 if (Test-Path ".\.venv\Scripts\python.exe") {
     try {
+        # Launch prompt_server in the foreground as Web Control
         & ".\.venv\Scripts\python.exe" ".\core\manager.py" install
-        Log-Success "Workstation successfully configured."
     } catch {
-        Log-Error "Credential configuration failed: $_"
+        Log-Error "Control assistant exited with error: $_"
         Exit 1
     }
 } else {
     Log-Error "Virtual environment python was not found after bootstrap setup!"
     Exit 1
 }
-
-Log-Success "=============================================="
-Log-Success "    OpenClaw Workstation Installed Successfully!"
-Log-Success "=============================================="
-Log-Info "You can now manage your system using the following commands inside $targetDir"
-Log-Info "  .\Manage.bat start   - Start LiteLLM and OpenClaw"
-Log-Info "  .\Manage.bat stop    - Terminate active servers"
-Log-Info "  .\Diagnose.bat       - Run connection latency benchmarks"
-Log-Info "=============================================="

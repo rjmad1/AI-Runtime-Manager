@@ -1,5 +1,5 @@
 # core/manager.py
-# Unified Lifecyle Management Engine for OpenClaw Workstation
+# Unified Lifecycle Management Daemon for AIRM (OpenClaw Workstation)
 
 import os
 import sys
@@ -15,6 +15,14 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 
+# Import local discovery engine
+try:
+    import discovery
+except ImportError:
+    # Handle path routing if run from root directory
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    import discovery
+
 # --- Constants & Paths ---
 CORE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CORE_DIR)
@@ -27,8 +35,8 @@ PROVIDERS_PATH = os.path.join(CONFIG_DIR, "providers.yaml")
 MODELS_PATH = os.path.join(CONFIG_DIR, "models.yaml")
 
 LITELLM_CONFIG_PATH = os.path.join(GENERATED_DIR, "config.yaml")
-LITELLM_SETTINGS_PATH = os.path.join(GENERATED_DIR, "litellm.yaml")
 OPENCLAW_CONFIG_PATH = os.path.join(GENERATED_DIR, "openclaw.json")
+SERVICES_STATE_PATH = os.path.join(GENERATED_DIR, "services.json")
 
 # Ensure folders exist
 os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -41,11 +49,10 @@ LOG_FILE = os.path.join(LOGS_DIR, "installer.log")
 def log(level, message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     clean_msg = message
-    # Secrets masking (generic regex for API keys: e.g., sk-... or similar)
+    # Secrets masking (mask API keys like sk-... or nvapi-...)
     clean_msg = re.sub(r'(sk-[a-zA-Z0-9]{12})[a-zA-Z0-9_-]+', r'\1...', clean_msg)
     clean_msg = re.sub(r'(nvapi-[a-zA-Z0-9]{12})[a-zA-Z0-9_-]+', r'\1...', clean_msg)
     
-    # Print to console with colors
     color = ""
     reset = "\033[0m"
     if level == "INFO":
@@ -58,15 +65,15 @@ def log(level, message):
         color = "\033[31m" # Red
         
     print(f"{color}[{level}] {clean_msg}{reset}")
+    sys.stdout.flush()
     
-    # Write to file
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}] [{level}] {clean_msg}\n")
     except Exception:
         pass
 
-# Safe YAML Loader (simplistic fallback to prevent library import errors)
+# Safe YAML Loader
 try:
     import yaml
     HAS_YAML = True
@@ -77,10 +84,14 @@ def load_yaml(path):
     if not os.path.exists(path):
         return {}
     if HAS_YAML:
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        except Exception as e:
+            log("WARNING", f"Failed to parse YAML file {path}: {e}. Falling back to default schema.")
+            return {}
     else:
-        # Simplistic parser for basic values in case yaml library is loading
+        # Fallback YAML parser for basic fields
         data = {}
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -105,7 +116,6 @@ def save_yaml(data, path):
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
     else:
-        # Fallback simplistic dumper
         with open(path, "w", encoding="utf-8") as f:
             for k, v in data.items():
                 if isinstance(v, dict):
@@ -115,15 +125,28 @@ def save_yaml(data, path):
                 else:
                     f.write(f"{k}: {json.dumps(v)}\n")
 
-# --- Helper functions for Windows Process Scavenging ---
+# --- Process State & Registry Functions ---
+
+def load_services_state():
+    if os.path.exists(SERVICES_STATE_PATH):
+        try:
+            with open(SERVICES_STATE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"litellm": None, "openclaw": None}
+
+def save_services_state(state):
+    try:
+        with open(SERVICES_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        log("ERROR", f"Failed to save services state: {e}")
 
 def get_pids_on_port(port):
-    """Find process IDs using a specific TCP port on Windows."""
     pids = set()
     try:
         res = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, check=True)
-        # Looking for ":port  *   LISTENING   PID"
-        # Example: TCP    127.0.0.1:4000         0.0.0.0:0              LISTENING       1234
         pattern = re.compile(rf":{port}\s+\S+\s+LISTENING\s+(\d+)")
         for line in res.stdout.splitlines():
             m = pattern.search(line)
@@ -133,8 +156,9 @@ def get_pids_on_port(port):
         log("WARNING", f"Could not list TCP connections: {e}")
     return list(pids)
 
-def is_pid_alive(pid):
-    """Check if a process ID is currently running on the system."""
+def is_pid_running(pid):
+    if not pid:
+        return False
     try:
         res = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True)
         return str(pid) in res.stdout
@@ -142,256 +166,129 @@ def is_pid_alive(pid):
         return False
 
 def kill_process_tree(pid):
-    """Gracefully terminate a process tree on Windows, falling back to force kill if unresponsive."""
     try:
-        log("INFO", f"Attempting graceful shutdown of PID {pid} and its children...")
-        # Try graceful termination first (taskkill without /F)
+        if not is_pid_running(pid):
+            return True
+        log("INFO", f"Terminating PID {pid} and its children gracefully...")
         subprocess.run(["taskkill", "/T", "/PID", str(pid)], capture_output=True)
         
-        # Wait up to 3 seconds for the process to exit
+        # Wait up to 3 seconds for exit
         for _ in range(3):
             time.sleep(1)
-            if not is_pid_alive(pid):
-                log("SUCCESS", f"Process PID {pid} exited gracefully.")
+            if not is_pid_running(pid):
                 return True
                 
-        # Force-kill fallback if process is still running
-        log("WARNING", f"PID {pid} did not respond. Initiating force kill...")
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, check=True)
-        log("SUCCESS", f"Successfully force-killed PID {pid}.")
+        # Force kill fallback
+        log("WARNING", f"PID {pid} still alive. Force killing...")
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
         return True
-    except subprocess.CalledProcessError as e:
-        log("WARNING", f"Could not kill PID {pid}: {e.stderr.strip() if e.stderr else str(e)}")
+    except Exception as e:
+        log("WARNING", f"Could not stop process PID {pid}: {e}")
         return False
 
 def scavenge_ports(ports):
-    """Find and kill processes on ports."""
     for port in ports:
         pids = get_pids_on_port(port)
         if pids:
-            log("WARNING", f"Port {port} is occupied by PIDs: {pids}")
+            log("WARNING", f"Port {port} occupied by PIDs {pids}. Cleaning up...")
             for pid in pids:
                 kill_process_tree(pid)
         else:
-            log("INFO", f"Port {port} is free.")
+            log("INFO", f"Port {port} is clear.")
 
-# --- System Discovery ---
-
-def get_username():
-    return os.environ.get("USERNAME", "default")
-
-def get_user_home():
-    return os.path.expanduser("~")
-
-def detect_gpu():
-    """Detect presence of NVIDIA GPU on Windows."""
-    try:
-        res = subprocess.run(["wmic", "path", "win32_VideoController", "get", "name"], capture_output=True, text=True)
-        lines = [line.strip() for line in res.stdout.splitlines() if line.strip() and "Name" not in line]
-        gpu_str = " / ".join(lines)
-        is_nvidia = "nvidia" in gpu_str.lower()
-        return is_nvidia, gpu_str
-    except Exception:
-        return False, "Unknown GPU"
-
-def discover_tools():
-    """Detect presence and paths of vital installer tools."""
-    tools = {}
-    for tool in ["git", "python", "node", "npm", "uv", "ollama"]:
-        try:
-            path = shutil.which(tool)
-            if path:
-                tools[tool] = path
-            else:
-                # Custom check for common paths on Windows
-                if tool == "python":
-                    for p in ["C:\\Python314\\python.exe", "C:\\Python313\\python.exe", "C:\\Python312\\python.exe", "C:\\Python311\\python.exe"]:
-                        if os.path.exists(p):
-                            tools[tool] = p
-                            break
-                elif tool == "node" and os.path.exists("C:\\Program Files\\nodejs\\node.exe"):
-                    tools[tool] = "C:\\Program Files\\nodejs\\node.exe"
-                elif tool == "npm" and os.path.exists("C:\\Program Files\\nodejs\\npm.cmd"):
-                    tools[tool] = "C:\\Program Files\\nodejs\\npm.cmd"
-                elif tool == "uv" and os.path.exists(os.path.join(get_user_home(), ".local", "bin", "uv.exe")):
-                    tools[tool] = os.path.join(get_user_home(), ".local", "bin", "uv.exe")
-                elif tool == "ollama":
-                    for p in [os.path.join(os.environ.get("LocalAppData", ""), "Programs", "Ollama", "ollama.exe"), "C:\\Program Files\\Ollama\\ollama.exe"]:
-                        if os.path.exists(p):
-                            tools[tool] = p
-                            break
-        except Exception:
-            pass
-    return tools
-
-# --- Ollama Support ---
-
-def query_ollama_models(api_base):
-    try:
-        url = f"{api_base.rstrip('/')}/api/tags"
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=2) as response:
-            data = json.loads(response.read().decode())
-            return [m['name'] for m in data.get('models', [])]
-    except Exception as e:
-        log("WARNING", f"Could not connect to Ollama api: {e}")
-        return []
-
-def start_ollama_if_needed(tools, api_base):
-    """Start Ollama if installed but not running."""
-    models = query_ollama_models(api_base)
-    if models:
-        return models
-    
-    if "ollama" in tools:
-        log("INFO", "Ollama is installed but not running. Launching Ollama serve...")
-        try:
-            subprocess.Popen([tools["ollama"], "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # Wait up to 5 seconds for Ollama to spin up
-            for _ in range(5):
-                time.sleep(1)
-                models = query_ollama_models(api_base)
-                if models:
-                    log("SUCCESS", "Ollama started successfully.")
-                    return models
-        except Exception as e:
-            log("WARNING", f"Could not start Ollama: {e}")
-    return []
-
-# --- API Key Management (Security) ---
+# --- Windows persistent user variable helpers ---
 
 def get_windows_env(name):
-    """Get persistent User Environment Variable from Windows registry/API."""
     try:
-        # Run PowerShell command to extract persistent user variable
         cmd = f"[System.Environment]::GetEnvironmentVariable('{name}', 'User')"
-        res = subprocess.run(["powershell", "-Command", cmd], capture_output=True, text=True, check=True)
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True, check=True)
         val = res.stdout.strip()
         if val:
             return val
     except Exception:
         pass
-    # Fallback to current process env
     return os.environ.get(name)
 
 def set_windows_env(name, value):
-    """Save persistent User Environment Variable to Windows."""
     try:
-        # Run PowerShell command to write persistent user variable
         cmd = f"[System.Environment]::SetEnvironmentVariable('{name}', '{value}', 'User')"
-        subprocess.run(["powershell", "-Command", cmd], capture_output=True, check=True)
-        # Also set it in current process
+        subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, check=True)
         os.environ[name] = value
         return True
     except Exception as e:
-        log("ERROR", f"Failed to save environment variable {name}: {e}")
+        log("ERROR", f"Failed to save env variable {name}: {e}")
         return False
 
-def validate_provider_key(provider, key):
-    """Validate API key format and length (simple client-side check)."""
-    if not key or len(key.strip()) < 8:
-        return False
-    # Specific formats check
-    if provider == "gemini" and not (key.startswith("AIzaSy") or len(key) >= 35):
-         return False
-    if provider == "groq" and not (key.startswith("gsk_") or len(key) >= 40):
-         return False
-    return True
-
-# --- Commands Execution ---
+# --- Core CLI Lifecycle Commands ---
 
 def cmd_install():
-    log("INFO", "Running installation and interactive setup...")
-    
-    # 1. Load providers
-    providers = load_yaml(PROVIDERS_PATH)
-    if not providers:
-        log("ERROR", "providers.yaml not found or corrupted.")
-        sys.exit(1)
-        
-    configured = 0
-    skipped = 0
-    
-    # Enable environment variables migration check
+    log("INFO", "Starting guided visual setup assistant...")
+    # Migrate old keys
     gemini_key = get_windows_env("GEMINI_API_KEY")
     if not gemini_key:
         google_key = get_windows_env("GOOGLE_API_KEY")
         if google_key:
-            log("INFO", "Auto-migrating GOOGLE_API_KEY to GEMINI_API_KEY...")
+            log("INFO", "Migrating GOOGLE_API_KEY to GEMINI_API_KEY...")
             set_windows_env("GEMINI_API_KEY", google_key)
-            gemini_key = google_key
 
-    # Check if there are any missing keys for enabled providers
-    missing_any = False
-    for p_name, p_info in providers.items():
-        if p_info.get("enabled", False):
-            env_var = p_info.get("env_var")
-            if not get_windows_env(env_var):
-                missing_any = True
-                break
-
-    if missing_any:
-        log("INFO", "Missing API credentials detected. Opening setup assistant in default browser...")
-        try:
-            # Spawn prompt_server.py in the same python environment
-            server_script = os.path.join(CORE_DIR, "prompt_server.py")
-            subprocess.run([sys.executable, server_script], check=True)
-            log("SUCCESS", "Completed credentials setup via web assistant.")
-        except Exception as e:
-            log("ERROR", f"Failed to run web configuration assistant: {e}")
-            log("INFO", "Resuming configuration compilation...")
-    else:
-        log("SUCCESS", "All enabled providers have configured API keys.")
-
-    # Run configuration generation
-    cmd_configure()
+    # Launch prompt_server.py
+    try:
+        server_script = os.path.join(CORE_DIR, "prompt_server.py")
+        log("INFO", f"Opening Web Control Center. Running server script: {server_script}")
+        # Run prompt_server.py (non-blocking if called from bootstrapper, but standard install runs it in foreground)
+        subprocess.run([sys.executable, server_script])
+    except Exception as e:
+        log("ERROR", f"Failed to launch installation assistant: {e}")
 
 def cmd_configure():
-    log("INFO", "Generating runtime configurations...")
+    log("INFO", "Compiling configuration blueprints...")
     
-    # 1. Load input configs
     settings = load_yaml(SETTINGS_PATH)
     providers = load_yaml(PROVIDERS_PATH)
     models_reg = load_yaml(MODELS_PATH)
     
     if not settings or not providers or not models_reg:
-        log("ERROR", "Missing settings.yaml, providers.yaml, or models.yaml.")
+        log("ERROR", "YAML settings files are missing or corrupted. Run 'Repair.bat' to restore them.")
         sys.exit(1)
         
-    tools = discover_tools()
+    # Get system and tools status
+    sys_details = discovery.run_all_discovery(SETTINGS_PATH)
+    tools = sys_details["tools"]
     
-    # 2. Check Ollama
+    # 1. Fetch Ollama local models if running
     ollama_enabled = settings.get("ollama", {}).get("enabled", True)
     ollama_api = settings.get("ollama", {}).get("api_base", "http://127.0.0.1:11434")
     ollama_autostart = settings.get("ollama", {}).get("autostart", True)
     
     ollama_models = []
     if ollama_enabled:
-        if ollama_autostart:
-            ollama_models = start_ollama_if_needed(tools, ollama_api)
-        else:
-            ollama_models = query_ollama_models(ollama_api)
-            
-        if ollama_models:
-            log("SUCCESS", f"Auto-discovered Ollama models: {ollama_models}")
-        else:
-            log("INFO", "No Ollama models found or Ollama is offline.")
-            
-    # 3. Compile LiteLLM config.yaml
-    litellm_model_list = []
-    active_fallbacks = {}
-    
-    # Build models from models.yaml (Pass 1: Identify active models)
+        ollama_models = discovery.get_ollama_models(ollama_api)
+        if not ollama_models and ollama_autostart and "ollama" in tools:
+            # Auto-start Ollama
+            log("INFO", "Starting Ollama service...")
+            try:
+                subprocess.Popen([tools["ollama"], "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                for _ in range(5):
+                    time.sleep(1)
+                    ollama_models = discovery.get_ollama_models(ollama_api)
+                    if ollama_models:
+                        log("SUCCESS", "Ollama connected successfully.")
+                        break
+            except Exception as e:
+                log("WARNING", f"Could not serve Ollama: {e}")
+                
+    # 2. Compile LiteLLM config
+    litellm_models = []
     active_model_ids = set()
+    
+    # Cloud models from models.yaml
     for m in models_reg.get("models", []):
         provider = m.get("provider")
         p_cfg = providers.get(provider, {})
-        
-        # Check if provider is enabled
         if p_cfg.get("enabled", False):
             env_var = p_cfg.get("env_var")
-            # Verify if API Key exists
-            if get_windows_env(env_var):
+            key_val = get_windows_env(env_var)
+            if key_val:
                 model_entry = {
                     "model_name": m.get("id"),
                     "litellm_params": {
@@ -399,14 +296,13 @@ def cmd_configure():
                         "api_key": f"os.environ/{env_var}"
                     }
                 }
-                litellm_model_list.append(model_entry)
+                litellm_models.append(model_entry)
                 active_model_ids.add(m.get("id"))
-            else:
-                log("WARNING", f"Model {m.get('id')} skipped (API key {env_var} not configured).")
                 
-    # Append Ollama models dynamically and add to active list
+    # Ollama models dynamically
     for om in ollama_models:
-        ollama_id = f"ollama/{om}"
+        om_name = om.get("name")
+        ollama_id = f"ollama/{om_name}"
         model_entry = {
             "model_name": ollama_id,
             "litellm_params": {
@@ -414,20 +310,21 @@ def cmd_configure():
                 "api_base": ollama_api
             }
         }
-        litellm_model_list.append(model_entry)
+        litellm_models.append(model_entry)
         active_model_ids.add(ollama_id)
         
-    # Pass 2: Populate fallbacks, filtering out disabled or unconfigured models
+    # Set fallbacks
+    active_fallbacks = {}
     for m in models_reg.get("models", []):
-        model_id = m.get("id")
-        if model_id in active_model_ids and m.get("fallbacks"):
-            filtered_fbs = [fb for fb in m.get("fallbacks") if fb in active_model_ids]
-            if filtered_fbs:
-                active_fallbacks[model_id] = filtered_fbs
-        
-    # Build full LiteLLM proxy configuration dictionary
+        mid = m.get("id")
+        if mid in active_model_ids and m.get("fallbacks"):
+            fbs = [fb for fb in m.get("fallbacks") if fb in active_model_ids]
+            if fbs:
+                active_fallbacks[mid] = fbs
+                
+    # Create final LiteLLM dict
     litellm_config = {
-        "model_list": litellm_model_list,
+        "model_list": litellm_models,
         "litellm_settings": {
             "drop_params": settings.get("litellm", {}).get("drop_params", True),
             "set_verbose": settings.get("litellm", {}).get("set_verbose", False)
@@ -440,17 +337,15 @@ def cmd_configure():
         }
     }
     
-    # Save LiteLLM config.yaml
     save_yaml(litellm_config, LITELLM_CONFIG_PATH)
-    log("SUCCESS", f"Generated LiteLLM Proxy configuration: {LITELLM_CONFIG_PATH}")
+    log("SUCCESS", f"LiteLLM config compiled: {LITELLM_CONFIG_PATH}")
     
-    # 4. Compile OpenClaw openclaw.json configuration
+    # 3. Compile OpenClaw openclaw.json
     openclaw_models = []
-    
-    # Base models from models.yaml
     for m in models_reg.get("models", []):
         provider = m.get("provider")
-        if providers.get(provider, {}).get("enabled", False) and get_windows_env(providers.get(provider, {}).get("env_var")):
+        p_cfg = providers.get(provider, {})
+        if p_cfg.get("enabled", False) and get_windows_env(p_cfg.get("env_var")):
             openclaw_models.append({
                 "id": m.get("id"),
                 "name": m.get("name"),
@@ -458,18 +353,16 @@ def cmd_configure():
                 "maxTokens": m.get("max_tokens", 4096)
             })
             
-    # Ollama models
     for om in ollama_models:
+        om_name = om.get("name")
         openclaw_models.append({
-            "id": f"ollama/{om}",
-            "name": f"{om} (Ollama)",
+            "id": f"ollama/{om_name}",
+            "name": f"{om_name} (Ollama)",
             "contextWindow": 4096,
             "maxTokens": 4096
         })
         
-    litellm_api_key = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
     litellm_port = settings.get("litellm", {}).get("port", 4000)
-    
     openclaw_cfg = {
         "models": {
             "providers": {
@@ -483,130 +376,112 @@ def cmd_configure():
         }
     }
     
-    # Save dynamic OpenClaw config to generated directory
     with open(OPENCLAW_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(openclaw_cfg, f, indent=2)
-    log("SUCCESS", f"Generated OpenClaw gateway configuration: {OPENCLAW_CONFIG_PATH}")
+    log("SUCCESS", f"OpenClaw gateway config compiled: {OPENCLAW_CONFIG_PATH}")
     
-    # 5. Non-destructive merge with active user openclaw.json (~/.openclaw/openclaw.json)
-    claw_dir = settings.get("openclaw", {}).get("config_dir")
-    if not claw_dir:
-        claw_dir = os.path.join(get_user_home(), ".openclaw")
-        
-    os.makedirs(claw_dir, exist_ok=True)
-    active_claw_path = os.path.join(claw_dir, "openclaw.json")
+    # 4. Merge into active ~/.openclaw/openclaw.json configuration safely
+    config_dir = settings.get("openclaw", {}).get("config_dir")
+    if not config_dir:
+        config_dir = os.path.join(os.path.expanduser("~"), ".openclaw")
+    os.makedirs(config_dir, exist_ok=True)
     
-    existing_claw_data = {}
+    active_claw_path = os.path.join(config_dir, "openclaw.json")
+    existing_data = {}
+    
     if os.path.exists(active_claw_path):
-        # Back it up first
-        backup_active = active_claw_path + ".bak"
-        shutil.copy2(active_claw_path, backup_active)
-        log("INFO", f"Backed up active OpenClaw config to {backup_active}")
-        
+        # Backup first
+        backup_path = active_claw_path + ".bak"
+        shutil.copy2(active_claw_path, backup_path)
         try:
             with open(active_claw_path, "r", encoding="utf-8") as f:
-                existing_claw_data = json.load(f)
+                existing_data = json.load(f)
         except Exception as e:
-            log("WARNING", f"Existing openclaw.json was corrupted. Merging with default schema. Error: {e}")
+            log("WARNING", f"Corrupted active config: {e}. Re-initializing.")
             
-    # Merge sections
-    # Keep existing plugins, tools, session, skills, env, gateway etc.
-    # Overwrite only the models provider list and agents default models
+    # Add dynamic gateway secure token
     import secrets
-    # Ensure secure gateway token is generated dynamically
-    if "gateway" not in existing_claw_data:
-        existing_claw_data["gateway"] = {
-            "auth": {
-                "mode": "token",
-                "token": secrets.token_hex(24)
-            },
+    if "gateway" not in existing_data:
+        existing_data["gateway"] = {
+            "auth": {"mode": "token", "token": secrets.token_hex(24)},
             "bind": "loopback",
             "mode": "local",
             "port": settings.get("openclaw", {}).get("port", 18789)
         }
     else:
-        # If the gateway exists, check if it uses the default static insecure token
-        auth = existing_claw_data["gateway"].get("auth", {})
+        # Prevent insecure static defaults
+        auth = existing_data["gateway"].get("auth", {})
         if auth.get("token") == "7d07bed5a8d8621d4dab6bec133d7297e58f915902437007":
-            log("WARNING", "Insecure static default token detected. Upgrading to dynamically generated token...")
-            if "auth" not in existing_claw_data["gateway"]:
-                existing_claw_data["gateway"]["auth"] = {}
-            existing_claw_data["gateway"]["auth"]["token"] = secrets.token_hex(24)
+            log("WARNING", "Upgrading default static token to dynamic secure token...")
+            if "auth" not in existing_data["gateway"]:
+                existing_data["gateway"]["auth"] = {}
+            existing_data["gateway"]["auth"]["token"] = secrets.token_hex(24)
+            
+    # Update litellm provider and models defaults
+    if "models" not in existing_data:
+        existing_data["models"] = {}
+    if "providers" not in existing_data["models"]:
+        existing_data["models"]["providers"] = {}
         
-    # Setup LiteLLM provider block
-    if "models" not in existing_claw_data:
-        existing_claw_data["models"] = {}
-    if "providers" not in existing_claw_data["models"]:
-        existing_claw_data["models"]["providers"] = {}
-        
-    existing_claw_data["models"]["providers"]["litellm"] = openclaw_cfg["models"]["providers"]["litellm"]
+    existing_data["models"]["providers"]["litellm"] = openclaw_cfg["models"]["providers"]["litellm"]
     
-    # Setup agents defaults
-    if "agents" not in existing_claw_data:
-        existing_claw_data["agents"] = {}
-    if "defaults" not in existing_claw_data["agents"]:
-        existing_claw_data["agents"]["defaults"] = {}
+    # Configure agents defaults
+    if "agents" not in existing_data:
+        existing_data["agents"] = {}
+    if "defaults" not in existing_data["agents"]:
+        existing_data["agents"]["defaults"] = {}
         
-    # Set primary model and fallbacks dynamically based on enabled models
-    primary_model = "litellm/gemini-2.5-flash"
+    primary = "litellm/gemini-2.5-flash"
     fallbacks = []
-    
-    active_ids = [m.get("id") for m in openclaw_models]
+    active_ids = [m["id"] for m in openclaw_models]
     if active_ids:
-        # Pick the first active model as primary
-        primary_model = f"litellm/{active_ids[0]}"
-        # The rest are fallbacks
+        primary = f"litellm/{active_ids[0]}"
         fallbacks = [f"litellm/{aid}" for aid in active_ids[1:]]
         
-    existing_claw_data["agents"]["defaults"]["model"] = {
-        "primary": primary_model,
+    existing_data["agents"]["defaults"]["model"] = {
+        "primary": primary,
         "fallbacks": fallbacks
     }
     
-    # Populate the defaults.models list
     agent_models = {}
     for aid in active_ids:
         agent_models[f"litellm/{aid}"] = {}
-    existing_claw_data["agents"]["defaults"]["models"] = agent_models
+    existing_data["agents"]["defaults"]["models"] = agent_models
     
-    if "workspace" not in existing_claw_data["agents"]["defaults"]:
-        existing_claw_data["agents"]["defaults"]["workspace"] = os.path.join(claw_dir, "workspace")
+    if "workspace" not in existing_data["agents"]["defaults"]:
+        existing_data["agents"]["defaults"]["workspace"] = os.path.join(config_dir, "workspace")
         
-    # Write back to active openclaw.json
+    # Write back
     try:
         with open(active_claw_path, "w", encoding="utf-8") as f:
-            json.dump(existing_claw_data, f, indent=2)
-        log("SUCCESS", f"Successfully updated active OpenClaw config at {active_claw_path}")
+            json.dump(existing_data, f, indent=2)
+        log("SUCCESS", f"Successfully synced active configuration: {active_claw_path}")
     except Exception as e:
-        log("ERROR", f"Failed to write to active openclaw.json: {e}")
-        # Rollback
+        log("ERROR", f"Failed to sync openclaw.json: {e}")
         if os.path.exists(active_claw_path + ".bak"):
             shutil.copy2(active_claw_path + ".bak", active_claw_path)
-            log("INFO", "Rolled back active OpenClaw config from backup.")
+            log("INFO", "Rolled back configuration from backup.")
 
 def cmd_start():
-    log("INFO", "Starting OpenClaw workstation stack...")
-    
+    log("INFO", "Starting AIRM system stack daemons...")
     settings = load_yaml(SETTINGS_PATH)
     litellm_port = settings.get("litellm", {}).get("port", 4000)
     openclaw_port = settings.get("openclaw", {}).get("port", 18789)
     litellm_key = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
     
-    # 1. Run scavenger to release ports if configured
+    # Clean rogue ports first
     if settings.get("lifecycle", {}).get("auto_cleanup_ports", True):
-        log("INFO", "Checking ports and cleaning up dangling processes...")
         scavenge_ports([litellm_port, openclaw_port])
         
-    # 2. Re-compile configurations
+    # Compile configs
     cmd_configure()
     
-    # 3. Setup environments
+    # Setup process env
     os.environ["LITELLM_API_KEY"] = litellm_key
     os.environ["OPENCLAW_GATEWAY_PORT"] = str(openclaw_port)
     os.environ["PYTHONIOENCODING"] = "utf-8"
     os.environ["PYTHONUTF8"] = "1"
     
-    # Make sure all API keys are passed to the start environment
     providers = load_yaml(PROVIDERS_PATH)
     for p_name, p_info in providers.items():
         if p_info.get("enabled", False):
@@ -614,43 +489,42 @@ def cmd_start():
             val = get_windows_env(var)
             if val:
                 os.environ[var] = val
-
-    # 4. Launch LiteLLM Proxy in background
-    log("INFO", f"Launching LiteLLM Proxy on port {litellm_port}...")
+                
+    # 1. Spawn LiteLLM Proxy
+    log("INFO", f"Spawning LiteLLM Proxy on port {litellm_port}...")
     venv_litellm = os.path.join(ROOT_DIR, ".venv", "Scripts", "litellm.exe")
     if os.path.exists(venv_litellm):
-        executable = venv_litellm
-        litellm_args = [executable, "--config", LITELLM_CONFIG_PATH, "--port", str(litellm_port)]
+        litellm_args = [venv_litellm, "--config", LITELLM_CONFIG_PATH, "--port", str(litellm_port)]
     else:
-        venv_python = os.path.join(ROOT_DIR, ".venv", "Scripts", "python.exe")
-        if not os.path.exists(venv_python):
-            venv_python = "python"
-        executable = venv_python
-        litellm_args = [executable, "-m", "litellm", "--config", LITELLM_CONFIG_PATH, "--port", str(litellm_port)]
-    
-    litellm_log_file = open(os.path.join(LOGS_DIR, "litellm.log"), "w", encoding="utf-8")
+        python_exe = os.path.join(ROOT_DIR, ".venv", "Scripts", "python.exe")
+        if not os.path.exists(python_exe):
+            python_exe = "python"
+        litellm_args = [python_exe, "-m", "litellm", "--config", LITELLM_CONFIG_PATH, "--port", str(litellm_port)]
+        
+    litellm_log = open(os.path.join(LOGS_DIR, "litellm.log"), "w", encoding="utf-8")
     
     try:
+        # Spawn detached on Windows (DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
+        litellm_flags = 0x00000008 | 0x00000200 | 0x01000000 if platform.system() == "Windows" else 0
         litellm_proc = subprocess.Popen(
             litellm_args,
-            stdout=litellm_log_file,
-            stderr=litellm_log_file,
-            creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
+            stdout=litellm_log,
+            stderr=litellm_log,
+            creationflags=litellm_flags,
+            close_fds=True
         )
     except Exception as e:
-        log("ERROR", f"Failed to spawn LiteLLM process: {e}")
+        log("ERROR", f"Failed to spawn LiteLLM daemon: {e}")
         sys.exit(1)
         
-    # 5. Poll LiteLLM readiness
-    log("INFO", "Waiting for LiteLLM Proxy readiness...")
+    # Poll LiteLLM health
+    log("INFO", "Polling LiteLLM Proxy readiness...")
     ready = False
-    readiness_url = f"http://localhost:{litellm_port}/health/readiness"
-    for i in range(30):
+    for _ in range(30):
         try:
-            req = urllib.request.Request(readiness_url)
-            with urllib.request.urlopen(req, timeout=1) as response:
-                content = response.read().decode().lower()
-                if "healthy" in content:
+            req = urllib.request.Request(f"http://localhost:{litellm_port}/health/readiness")
+            with urllib.request.urlopen(req, timeout=1.0) as res:
+                if "healthy" in res.read().decode().lower():
                     ready = True
                     break
         except Exception:
@@ -658,94 +532,106 @@ def cmd_start():
         time.sleep(1)
         
     if ready:
-        log("SUCCESS", "LiteLLM Proxy is online and healthy!")
+        log("SUCCESS", "LiteLLM Proxy is online.")
     else:
-        log("WARNING", "LiteLLM Proxy did not report ready in time. Attempting to start OpenClaw anyway...")
+        log("WARNING", "LiteLLM Proxy is taking longer than expected to launch.")
         
-    # 6. Launch OpenClaw Gateway
-    log("INFO", f"Launching OpenClaw Gateway on port {openclaw_port}...")
+    # 2. Spawn OpenClaw Gateway
+    log("INFO", f"Spawning OpenClaw Gateway on port {openclaw_port}...")
+    sys_details = discovery.run_all_discovery(SETTINGS_PATH)
+    node_exe = sys_details["tools"].get("node", "node.exe")
     
-    tools = discover_tools()
-    node_exe = tools.get("node", "node.exe")
-    
-    # Locate OpenClaw index.js (Local first, then Global AppData, then global node_modules)
     local_dist = os.path.join(ROOT_DIR, "node_modules", "openclaw", "dist", "index.js")
     global_appdata_dist = os.path.join(os.environ.get("AppData", ""), "npm", "node_modules", "openclaw", "dist", "index.js")
-    global_program_files_dist = os.path.join(os.environ.get("ProgramFiles", ""), "nodejs", "node_modules", "openclaw", "dist", "index.js")
     
-    openclaw_dist = None
+    openclaw_args = []
     if os.path.exists(local_dist):
-        openclaw_dist = local_dist
-        log("INFO", f"Found local OpenClaw installation at: {local_dist}")
+        openclaw_exe = node_exe
+        openclaw_args = [local_dist, "gateway", "--port", str(openclaw_port)]
     elif os.path.exists(global_appdata_dist):
-        openclaw_dist = global_appdata_dist
-        log("INFO", f"Found global AppData OpenClaw installation at: {global_appdata_dist}")
-    elif os.path.exists(global_program_files_dist):
-        openclaw_dist = global_program_files_dist
-        log("INFO", f"Found global Program Files OpenClaw installation at: {global_program_files_dist}")
-
-    if not openclaw_dist:
-        # Fallback to simple command execution via system PATH
-        openclaw_args = ["openclaw", "gateway", "--port", str(openclaw_port)]
-        executable = "cmd.exe"
-        openclaw_args = ["/c"] + openclaw_args
-        log("INFO", "OpenClaw package index.js not found in directories; executing from system PATH.")
+        openclaw_exe = node_exe
+        openclaw_args = [global_appdata_dist, "gateway", "--port", str(openclaw_port)]
     else:
-        executable = node_exe
-        openclaw_args = [openclaw_dist, "gateway", "--port", str(openclaw_port)]
+        openclaw_exe = "cmd.exe"
+        openclaw_args = ["/c", "openclaw", "gateway", "--port", str(openclaw_port)]
         
-    log("INFO", f"Running OpenClaw Gateway. Press Ctrl+C to terminate both servers.")
-    print("--------------------------------------------------------------------------------")
+    openclaw_log = open(os.path.join(LOGS_DIR, "openclaw.log"), "w", encoding="utf-8")
     
     try:
-        # Run OpenClaw in the foreground
-        subprocess.run([executable] + openclaw_args, check=True)
-    except KeyboardInterrupt:
-        print("\n--------------------------------------------------------------------------------")
-        log("INFO", "Shutting down servers...")
+        openclaw_flags = 0x00000008 | 0x00000200 | 0x01000000 if platform.system() == "Windows" else 0
+        openclaw_proc = subprocess.Popen(
+            [openclaw_exe] + openclaw_args,
+            stdout=openclaw_log,
+            stderr=openclaw_log,
+            creationflags=openclaw_flags,
+            close_fds=True
+        )
     except Exception as e:
-        log("ERROR", f"OpenClaw execution error: {e}")
-    finally:
-        # Terminate LiteLLM Proxy
-        if litellm_proc.poll() is None:
-            log("INFO", f"Stopping LiteLLM Proxy (PID: {litellm_proc.pid})...")
-            kill_process_tree(litellm_proc.pid)
-        litellm_log_file.close()
-        log("SUCCESS", "Servers stopped cleanly.")
+        log("ERROR", f"Failed to spawn OpenClaw daemon: {e}")
+        kill_process_tree(litellm_proc.pid)
+        sys.exit(1)
+        
+    # Save active PIDs
+    save_services_state({
+        "litellm": litellm_proc.pid,
+        "openclaw": openclaw_proc.pid
+    })
+    
+    log("SUCCESS", f"Daemons initialized. PIDs: LiteLLM={litellm_proc.pid}, OpenClaw={openclaw_proc.pid}")
 
 def cmd_stop():
-    log("INFO", "Stopping all OpenClaw workstation components...")
+    log("INFO", "Terminating active daemon processes...")
+    state = load_services_state()
+    
+    if state.get("litellm"):
+        kill_process_tree(state["litellm"])
+    if state.get("openclaw"):
+        kill_process_tree(state["openclaw"])
+        
+    # Double check ports
     settings = load_yaml(SETTINGS_PATH)
     litellm_port = settings.get("litellm", {}).get("port", 4000)
     openclaw_port = settings.get("openclaw", {}).get("port", 18789)
     scavenge_ports([litellm_port, openclaw_port])
-    log("SUCCESS", "Components stopped.")
+    
+    # Reset registry
+    save_services_state({"litellm": None, "openclaw": None})
+    log("SUCCESS", "All services stopped.")
 
 def cmd_status():
-    log("INFO", "Retrieving stack status...")
+    log("INFO", "Inspecting runtime state...")
+    state = load_services_state()
     settings = load_yaml(SETTINGS_PATH)
     litellm_port = settings.get("litellm", {}).get("port", 4000)
     openclaw_port = settings.get("openclaw", {}).get("port", 18789)
     
-    l_pids = get_pids_on_port(litellm_port)
-    c_pids = get_pids_on_port(openclaw_port)
+    l_pid = state.get("litellm")
+    c_pid = state.get("openclaw")
+    
+    l_alive = is_pid_running(l_pid) if l_pid else False
+    c_alive = is_pid_running(c_pid) if c_pid else False
+    
+    # Cross check ports
+    l_pids_on_port = get_pids_on_port(litellm_port)
+    c_pids_on_port = get_pids_on_port(openclaw_port)
+    
+    l_status = "ONLINE" if (l_alive or l_pids_on_port) else "OFFLINE"
+    c_status = "ONLINE" if (c_alive or c_pids_on_port) else "OFFLINE"
     
     print("\n==============================================")
-    print("   OpenClaw Workstation Status Dashboard")
+    print("      AIRM Server Daemon Status Dashboard")
     print("==============================================")
-    if l_pids:
-        print(f"LiteLLM Proxy:     ONLINE (Port: {litellm_port}, PIDs: {l_pids})")
-    else:
-        print(f"LiteLLM Proxy:     OFFLINE (Port: {litellm_port})")
-        
-    if c_pids:
-        print(f"OpenClaw Gateway:  ONLINE (Port: {openclaw_port}, PIDs: {c_pids})")
-    else:
-        print(f"OpenClaw Gateway:  OFFLINE (Port: {openclaw_port})")
+    print(f"LiteLLM Proxy (Port {litellm_port}):     {l_status} (PID: {l_pid or 'N/A'}, Active on Port: {l_pids_on_port})")
+    print(f"OpenClaw Gateway (Port {openclaw_port}):  {c_status} (PID: {c_pid or 'N/A'}, Active on Port: {c_pids_on_port})")
     print("==============================================")
+    
+    return {
+        "litellm": {"status": l_status, "pid": l_pid, "pids_on_port": l_pids_on_port},
+        "openclaw": {"status": c_status, "pid": c_pid, "pids_on_port": c_pids_on_port}
+    }
 
 def cmd_diagnose():
-    log("INFO", "Running workstation diagnostic tests...")
+    log("INFO", "Running endpoint connectivity and speed benchmarks...")
     
     settings = load_yaml(SETTINGS_PATH)
     providers = load_yaml(PROVIDERS_PATH)
@@ -754,43 +640,41 @@ def cmd_diagnose():
     litellm_port = settings.get("litellm", {}).get("port", 4000)
     litellm_key = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
     
-    # 1. Dependency checks
-    tools = discover_tools()
-    is_nvidia, gpu_name = detect_gpu()
+    # 1. Dependency discovery
+    sys_details = discovery.run_all_discovery(SETTINGS_PATH)
+    tools = sys_details["tools"]
+    specs = sys_details["specs"]
     
     diagnostics = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "os": f"{platform.system()} {platform.release()}",
-        "gpu": gpu_name,
+        "os": specs["os"],
+        "gpu": " / ".join([g["name"] for g in specs["gpus"]]) if specs["gpus"] else "CPU Only",
         "tools": tools,
         "models": []
     }
     
-    # 2. Check LiteLLM running status
-    litellm_online = len(get_pids_on_port(litellm_port)) > 0
-    if not litellm_online:
-        log("ERROR", f"LiteLLM Proxy is not running on port {litellm_port}. Cannot run API diagnostics.")
-        log("INFO", "Please start the gateway first before running diagnostics.")
+    # 2. Check LiteLLM status
+    l_pids = get_pids_on_port(litellm_port)
+    if not l_pids:
+        log("ERROR", f"LiteLLM Proxy is OFFLINE on port {litellm_port}. Cannot execute diagnostics.")
         sys.exit(1)
         
-    # 3. Model validation and benchmarking
-    log("INFO", "Benchmarking model completion latencies...")
-    
+    # 3. Model benchmarking
     active_models = []
-    # Load all models that should be compiled
     for m in models_reg.get("models", []):
         provider = m.get("provider")
         p_cfg = providers.get(provider, {})
         if p_cfg.get("enabled", False) and get_windows_env(p_cfg.get("env_var")):
             active_models.append(m)
             
-    # Add Ollama models if any
+    # Add Ollama local models
     ollama_api = settings.get("ollama", {}).get("api_base", "http://127.0.0.1:11434")
-    ollama_models = query_ollama_models(ollama_api)
+    ollama_models = discovery.get_ollama_models(ollama_api)
     for om in ollama_models:
+        om_name = om.get("name")
         active_models.append({
-            "id": f"ollama/{om}",
-            "name": f"{om} (Ollama)",
+            "id": f"ollama/{om_name}",
+            "name": f"{om_name} (Ollama)",
             "provider": "ollama"
         })
         
@@ -804,15 +688,15 @@ def cmd_diagnose():
         friendly_name = am.get("name")
         provider = am.get("provider")
         
-        log("INFO", f"Testing completion for model: {friendly_name} ({model_id})...")
+        log("INFO", f"Benchmarking latency for {friendly_name} ({model_id})...")
         
         body = {
             "model": model_id,
-            "messages": [{"role": "user", "content": "Respond with only one word: hello"}],
-            "max_tokens": 5
+            "messages": [{"role": "user", "content": "Respond with only one word: test"}],
+            "max_tokens": 3
         }
         
-        start_time = time.perf_counter()
+        start = time.perf_counter()
         success = False
         latency = 0
         error_msg = ""
@@ -825,26 +709,21 @@ def cmd_diagnose():
                 headers=headers,
                 method="POST"
             )
-            with urllib.request.urlopen(req, timeout=15) as res:
-                end_time = time.perf_counter()
-                latency = int((end_time - start_time) * 1000)
+            with urllib.request.urlopen(req, timeout=12.0) as res:
+                latency = int((time.perf_counter() - start) * 1000)
                 res_data = json.loads(res.read().decode())
                 response_text = res_data['choices'][0]['message']['content'].strip()
                 success = True
-                log("SUCCESS", f"  Received response in {latency}ms: '{response_text}'")
+                log("SUCCESS", f"  Response returned in {latency}ms: '{response_text}'")
         except urllib.error.HTTPError as e:
-            latency = int((time.perf_counter() - start_time) * 1000)
+            latency = int((time.perf_counter() - start) * 1000)
             try:
-                error_msg = e.read().decode()
-                # Try to parse json error
-                err_json = json.loads(error_msg)
-                if 'error' in err_json and 'message' in err_json['error']:
-                    error_msg = err_json['error']['message']
+                error_msg = json.loads(e.read().decode())['error']['message']
             except Exception:
                 error_msg = str(e)
             log("ERROR", f"  Request failed: {error_msg}")
         except Exception as e:
-            latency = int((time.perf_counter() - start_time) * 1000)
+            latency = int((time.perf_counter() - start) * 1000)
             error_msg = str(e)
             log("ERROR", f"  Request failed: {error_msg}")
             
@@ -858,328 +737,181 @@ def cmd_diagnose():
             "error": error_msg
         })
         
-    # Generate reports
-    generate_reports(diagnostics)
+    generate_diagnostic_reports(diagnostics)
+    return diagnostics
 
-def generate_reports(diagnostics):
-    """Write health report outputs in Markdown and HTML formats."""
+def generate_diagnostic_reports(diagnostics):
     md_path = os.path.join(GENERATED_DIR, "health-report.md")
     html_path = os.path.join(GENERATED_DIR, "health-report.html")
     
-    # 1. Generate Markdown Report
-    md = []
-    md.append("# OpenClaw Workstation Health & Diagnostics Report")
-    md.append(f"\n**Checked at:** {diagnostics['timestamp']}")
-    md.append(f"\n**OS Platform:** {diagnostics['os']}")
-    md.append(f"**GPU Hardware:** {diagnostics['gpu']}")
-    
-    md.append("\n## System Dependency Discovery")
-    md.append("| Dependency | Status | Executable Path |")
-    md.append("| :--- | :--- | :--- |")
+    # 1. MD Report
+    md = [
+        "# AIRM Diagnostics & Connectivity Report",
+        f"\n**Execution Timestamp:** {diagnostics['timestamp']}",
+        f"**Operating System:** {diagnostics['os']}",
+        f"**Video Controller:** {diagnostics['gpu']}\n",
+        "## Dependency Audit",
+        "| Package | Registry Status | Target Filepath |",
+        "| :--- | :--- | :--- |"
+    ]
     for tool in ["git", "python", "node", "npm", "uv", "ollama"]:
         status = "FOUND" if tool in diagnostics["tools"] else "MISSING"
         path = diagnostics["tools"].get(tool, "N/A")
         md.append(f"| {tool.upper()} | {status} | `{path}` |")
         
-    md.append("\n## Endpoint Latency & Benchmark Registry")
-    md.append("| Provider / Model | Status | Latency (ms) | Output / Error Message |")
+    md.append("\n## Endpoint Latency registry")
+    md.append("| Provider / Model ID | Status | Latency (ms) | Output Summary / Error |")
     md.append("| :--- | :--- | :--- | :--- |")
     
     for m in diagnostics["models"]:
         status = "HEALTHY" if m["success"] else "FAILED"
         latency = f"{m['latency_ms']} ms" if m["success"] else "N/A"
-        msg = f"Response: '{m['response']}'" if m["success"] else f"Error: {m['error']}"
-        md.append(f"| {m['name']} (`{m['id']}`) | {status} | {latency} | {msg} |")
+        desc = f"Returned: '{m['response']}'" if m["success"] else f"Error: {m['error']}"
+        md.append(f"| {m['name']} (`{m['id']}`) | {status} | {latency} | {desc} |")
         
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(md))
-    log("SUCCESS", f"Markdown diagnostic report compiled: {md_path}")
-    
-    # 2. Generate HTML Report (Beautiful premium dark mode)
-    html = []
-    html.append("""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenClaw Workstation Diagnostics</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-color: #0f172a;
-            --card-bg: #1e293b;
-            --card-border: #334155;
-            --accent: #3b82f6;
-            --success: #10b981;
-            --error: #ef4444;
-            --text-main: #f8fafc;
-            --text-muted: #94a3b8;
-        }
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-        body {
-            font-family: 'Outfit', sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            padding: 2.5rem 1.5rem;
-            line-height: 1.6;
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        header {
-            margin-bottom: 2.5rem;
-            border-bottom: 1px solid var(--card-border);
-            padding-bottom: 1.5rem;
-        }
-        h1 {
-            font-size: 2.5rem;
-            font-weight: 700;
-            background: linear-gradient(to right, #60a5fa, #3b82f6, #2563eb);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 0.5rem;
-        }
-        .meta-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2.5rem;
-        }
-        .meta-card {
-            background-color: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 12px;
-            padding: 1.25rem;
-            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-        }
-        .meta-label {
-            font-size: 0.875rem;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 0.25rem;
-        }
-        .meta-value {
-            font-size: 1.25rem;
-            font-weight: 600;
-        }
-        h2 {
-            font-size: 1.75rem;
-            margin-bottom: 1.25rem;
-            font-weight: 600;
-        }
-        .dep-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 2.5rem;
-            background-color: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 12px;
-            overflow: hidden;
-        }
-        .dep-table th, .dep-table td {
-            padding: 1rem 1.25rem;
-            text-align: left;
-        }
-        .dep-table th {
-            background-color: #1e293b;
-            font-weight: 600;
-            border-bottom: 1px solid var(--card-border);
-        }
-        .dep-table tr:not(:last-child) {
-            border-bottom: 1px solid var(--card-border);
-        }
-        .badge {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            font-size: 0.75rem;
-            font-weight: 600;
-            border-radius: 9999px;
-            text-transform: uppercase;
-        }
-        .badge-found {
-            background-color: rgba(16, 185, 129, 0.15);
-            color: var(--success);
-        }
-        .badge-missing {
-            background-color: rgba(239, 68, 68, 0.15);
-            color: var(--error);
-        }
-        .model-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-            gap: 1.5rem;
-        }
-        .model-card {
-            background-color: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 16px;
-            padding: 1.5rem;
-            position: relative;
-            overflow: hidden;
-            transition: transform 0.2s, border-color 0.2s;
-        }
-        .model-card:hover {
-            transform: translateY(-2px);
-            border-color: var(--accent);
-        }
-        .model-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 1rem;
-        }
-        .model-name {
-            font-size: 1.25rem;
-            font-weight: 600;
-        }
-        .model-id {
-            font-size: 0.875rem;
-            color: var(--text-muted);
-            font-family: monospace;
-        }
-        .latency-value {
-            font-size: 1.75rem;
-            font-weight: 700;
-            color: var(--accent);
-            margin: 0.75rem 0;
-        }
-        .error-box {
-            background-color: rgba(239, 68, 68, 0.08);
-            border: 1px solid rgba(239, 68, 68, 0.2);
-            color: #fca5a5;
-            padding: 0.75rem;
-            border-radius: 8px;
-            font-size: 0.875rem;
-            margin-top: 0.75rem;
-            font-family: monospace;
-            word-break: break-all;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header>
-            <h1>OpenClaw Workstation Diagnostics</h1>
-            <p style="color: var(--text-muted)">System Integrity & Provider Connection Dashboard</p>
-        </header>
-
-        <div class="meta-grid">""")
         
-    html.append(f"""
-            <div class="meta-card">
-                <div class="meta-label">Checked Timestamp</div>
-                <div class="meta-value">{diagnostics['timestamp']}</div>
-            </div>
-            <div class="meta-card">
-                <div class="meta-label">OS Platform</div>
-                <div class="meta-value">{diagnostics['os']}</div>
-            </div>
-            <div class="meta-card">
-                <div class="meta-label">Graphics Hardware</div>
-                <div class="meta-value">{diagnostics['gpu']}</div>
-            </div>
-    """)
-    
-    html.append("""
-        </div>
-
-        <h2>Dependencies Status</h2>
-        <table class="dep-table">
-            <thead>
-                <tr>
-                    <th>Executable / Package</th>
-                    <th>Availability</th>
-                    <th>Target Path</th>
-                </tr>
-            </thead>
-            <tbody>""")
-            
+    # 2. Beautiful HTML Report
+    html = [
+        "<!DOCTYPE html>",
+        "<html lang='en'>",
+        "<head>",
+        "  <meta charset='UTF-8'>",
+        "  <title>AIRM Diagnostics Console</title>",
+        "  <link href='https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap' rel='stylesheet'>",
+        "  <style>",
+        "    :root { --bg: #0f172a; --card: #1e293b; --border: #334155; --accent: #3b82f6; --success: #10b981; --error: #ef4444; --text: #f8fafc; --muted: #94a3b8; }",
+        "    * { box-sizing: border-box; margin: 0; padding: 0; }",
+        "    body { font-family: 'Outfit', sans-serif; background-color: var(--bg); color: var(--text); padding: 3rem 1.5rem; line-height: 1.6; }",
+        "    .container { max-width: 1000px; margin: 0 auto; }",
+        "    header { margin-bottom: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 1.5rem; }",
+        "    h1 { font-size: 2.25rem; font-weight: 700; background: linear-gradient(to right, #60a5fa, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }",
+        "    .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-bottom: 2.5rem; }",
+        "    .meta-card { background: var(--card); border: 1px solid var(--border); padding: 1.25rem; border-radius: 12px; }",
+        "    .meta-label { font-size: 0.85rem; color: var(--muted); text-transform: uppercase; margin-bottom: 0.25rem; }",
+        "    .meta-value { font-size: 1.15rem; font-weight: 600; }",
+        "    table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 2.5rem; }",
+        "    th, td { padding: 1rem 1.25rem; text-align: left; }",
+        "    th { background: #1e293b; font-weight: 600; border-bottom: 1px solid var(--border); }",
+        "    tr:not(:last-child) { border-bottom: 1px solid var(--border); }",
+        "    .badge { display: inline-block; padding: 0.2rem 0.6rem; font-size: 0.75rem; font-weight: 600; border-radius: 9999px; text-transform: uppercase; }",
+        "    .badge-found { background: rgba(16, 185, 129, 0.15); color: var(--success); }",
+        "    .badge-missing { background: rgba(239, 68, 68, 0.15); color: var(--error); }",
+        "    .model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }",
+        "    .model-card { background: var(--card); border: 1px solid var(--border); padding: 1.5rem; border-radius: 16px; transition: transform 0.2s; }",
+        "    .model-card:hover { transform: translateY(-2px); border-color: var(--accent); }",
+        "    .model-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }",
+        "    .model-name { font-size: 1.2rem; font-weight: 600; }",
+        "    .model-id { font-size: 0.8rem; color: var(--muted); font-family: monospace; }",
+        "    .latency { font-size: 1.5rem; font-weight: 700; color: var(--accent); margin: 0.5rem 0; }",
+        "    .error-box { background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2); color: #fca5a5; padding: 0.75rem; border-radius: 8px; font-size: 0.8rem; font-family: monospace; word-break: break-all; }",
+        "  </style>",
+        "</head>",
+        "<body>",
+        "  <div class='container'>",
+        "    <header>",
+        "      <h1>AIRM Integrity Diagnostics Report</h1>",
+        "      <p style='color: var(--muted); margin-top: 0.25rem;'>Workstation Endpoint Benchmarks</p>",
+        "    </header>",
+        "    <div class='meta-grid'>",
+        f"      <div class='meta-card'><div class='meta-label'>Timestamp</div><div class='meta-value'>{diagnostics['timestamp']}</div></div>",
+        f"      <div class='meta-card'><div class='meta-label'>OS Details</div><div class='meta-value'>{diagnostics['os']}</div></div>",
+        f"      <div class='meta-card'><div class='meta-label'>Video Controllers</div><div class='meta-value'>{diagnostics['gpu']}</div></div>",
+        "    </div>",
+        "    <h2>Prerequisite Software Checks</h2>",
+        "    <table>",
+        "      <thead><tr><th>Dependency</th><th>Availability</th><th>Filepath</th></tr></thead>",
+        "      <tbody>"
+    ]
     for tool in ["git", "python", "node", "npm", "uv", "ollama"]:
         status = "FOUND" if tool in diagnostics["tools"] else "MISSING"
-        badge_class = "badge-found" if tool in diagnostics["tools"] else "badge-missing"
+        badge = "badge-found" if tool in diagnostics["tools"] else "badge-missing"
         path = diagnostics["tools"].get(tool, "N/A")
-        html.append(f"""
-                <tr>
-                    <td><strong>{tool.upper()}</strong></td>
-                    <td><span class="badge {badge_class}">{status}</span></td>
-                    <td><code>{path}</code></td>
-                </tr>""")
-                
-    html.append("""
-            </tbody>
-        </table>
-
-        <h2>Endpoints Latency Benchmarks</h2>
-        <div class="model-grid">""")
+        html.append(f"        <tr><td><strong>{tool.upper()}</strong></td><td><span class='badge {badge}'>{status}</span></td><td><code>{path}</code></td></tr>")
         
+    html.extend([
+        "      </tbody>",
+        "    </table>",
+        "    <h2>Provider Latency Benchmarks</h2>",
+        "    <div class='model-grid'>"
+    ])
     for m in diagnostics["models"]:
-        badge_class = "badge-found" if m["success"] else "badge-missing"
+        badge = "badge-found" if m["success"] else "badge-missing"
         status_txt = "Healthy" if m["success"] else "Failed"
         latency_txt = f"{m['latency_ms']} ms" if m["success"] else "Offline"
         
-        html.append(f"""
-            <div class="model-card">
-                <div class="model-header">
-                    <div>
-                        <div class="model-name">{m['name']}</div>
-                        <div class="model-id">{m['id']}</div>
-                    </div>
-                    <span class="badge {badge_class}">{status_txt}</span>
-                </div>
-                <div class="latency-value">{latency_txt}</div>""")
-                
+        html.append(f"      <div class='model-card'><div class='model-header'><div><div class='model-name'>{m['name']}</div><div class='model-id'>{m['id']}</div></div><span class='badge {badge}'>{status_txt}</span></div><div class='latency'>{latency_txt}</div>")
         if m["success"]:
-            html.append(f"""
-                <div style="font-size: 0.875rem; color: var(--text-muted)">
-                    Response: <span style="color: var(--text-main); font-style: italic">"{m['response']}"</span>
-                </div>
-            """)
+            html.append(f"        <div style='font-size: 0.85rem; color: var(--muted)'>Response: <span style='color: var(--text); font-style: italic'>\"{m['response']}\"</span></div>")
         else:
-            html.append(f"""
-                <div class="error-box">{m['error']}</div>
-            """)
-            
-        html.append("</div>")
+            html.append(f"        <div class='error-box'>{m['error']}</div>")
+        html.append("      </div>")
         
-    html.append("""
-        </div>
-    </div>
-</body>
-</html>""")
+    html.extend([
+        "    </div>",
+        "  </div>",
+        "</body>",
+        "</html>"
+    ])
     
     with open(html_path, "w", encoding="utf-8") as f:
         f.write("\n".join(html))
-    log("SUCCESS", f"HTML diagnostic report compiled: {html_path}")
+    log("SUCCESS", f"Diagnostic health reports generated: health-report.md and health-report.html")
 
 def cmd_repair():
-    log("INFO", "Executing self-healing routine...")
-    
+    log("INFO", "Initiating system self-healing check...")
     settings = load_yaml(SETTINGS_PATH)
     litellm_port = settings.get("litellm", {}).get("port", 4000)
     openclaw_port = settings.get("openclaw", {}).get("port", 18789)
     
-    # 1. Kill stale processes holding ports
-    log("INFO", "Port Auditing: scavenge occupied gateway ports...")
+    # 1. Re-scavenge occupied ports
+    log("INFO", "Port Auditing: release lock on workstation ports...")
     scavenge_ports([litellm_port, openclaw_port])
     
     # 2. Check and regenerate configuration files
-    log("INFO", "Configuration Auditing: checking configuration file schemas...")
+    log("INFO", "Configuration Auditing: checking configuration blueprint schemas...")
     
-    # Regenerate configs
+    # If settings/providers/models.yaml are missing or empty, recreate templates
+    if not os.path.exists(SETTINGS_PATH) or os.path.getsize(SETTINGS_PATH) == 0:
+        log("WARNING", "settings.yaml was corrupted or missing. Restoring default template...")
+        default_settings = {
+            "litellm": {"host": "127.0.0.1", "port": 4000, "api_key": "sk-litellm-key", "set_verbose": False, "drop_params": True, "routing_strategy": "latency-based-routing", "num_retries": 3, "request_timeout": 30},
+            "openclaw": {"host": "127.0.0.1", "port": 18789, "config_dir": ""},
+            "ollama": {"enabled": True, "api_base": "http://127.0.0.1:11434", "autostart": True},
+            "lifecycle": {"log_level": "INFO", "backup_dir": "backups", "auto_cleanup_ports": True}
+        }
+        save_yaml(default_settings, SETTINGS_PATH)
+        
+    if not os.path.exists(PROVIDERS_PATH) or os.path.getsize(PROVIDERS_PATH) == 0:
+        log("WARNING", "providers.yaml was corrupted or missing. Restoring default template...")
+        default_providers = {
+            "gemini": {"enabled": True, "env_var": "GEMINI_API_KEY", "info": "Free tier available at Google AI Studio"},
+            "groq": {"enabled": True, "env_var": "GROQ_API_KEY", "info": "Free tier available at Groq Console"},
+            "sambanova": {"enabled": True, "env_var": "SAMBANOVA_API_KEY", "info": "Free API key available at SambaNova Cloud"},
+            "cerebras": {"enabled": True, "env_var": "CEREBRAS_API_KEY", "info": "Free API key available at Cerebras Console"},
+            "openrouter": {"enabled": True, "env_var": "OPENROUTER_API_KEY", "info": "Sign up at OpenRouter"}
+        }
+        save_yaml(default_providers, PROVIDERS_PATH)
+        
+    if not os.path.exists(MODELS_PATH) or os.path.getsize(MODELS_PATH) == 0:
+        log("WARNING", "models.yaml was corrupted or missing. Restoring default template...")
+        default_models = {"models": [
+            {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "provider": "gemini", "litellm_model": "gemini/gemini-2.5-flash", "context_window": 1048576, "max_tokens": 8192, "fallbacks": ["llama-3.3-70b-sambanova", "llama-3.3-70b-groq"]},
+            {"id": "llama-3.3-70b-groq", "name": "Llama 3.3 70B (Groq)", "provider": "groq", "litellm_model": "groq/llama-3.3-70b-versatile", "context_window": 4096, "max_tokens": 4096, "fallbacks": ["llama-3.3-70b-sambanova", "llama-3.1-70b-cerebras"]},
+            {"id": "llama-3.3-70b-sambanova", "name": "Llama 3.3 70B (SambaNova)", "provider": "sambanova", "litellm_model": "sambanova/Meta-Llama-3.3-70B-Instruct", "context_window": 4096, "max_tokens": 4096, "fallbacks": ["llama-3.3-70b-groq", "llama-3.1-70b-cerebras"]},
+            {"id": "llama-3.1-70b-cerebras", "name": "Llama 3.1 70B (Cerebras)", "provider": "cerebras", "litellm_model": "cerebras/llama3.1-70b", "context_window": 8192, "max_tokens": 4096, "fallbacks": ["llama-3.3-70b-sambanova", "llama-3.3-70b-groq"]}
+        ]}
+        save_yaml(default_models, MODELS_PATH)
+        
     try:
         cmd_configure()
         log("SUCCESS", "YAML schemas parsed and compiled successfully.")
     except Exception as e:
-        log("ERROR", f"Failed to rebuild configuration files: {e}")
+        log("ERROR", f"Failed to rebuild configuration blueprints: {e}")
         
     # 3. Clean LiteLLM cache
-    litellm_cache = os.path.join(get_user_home(), ".cache", "litellm")
+    litellm_cache = os.path.join(os.path.expanduser("~"), ".cache", "litellm")
     if os.path.exists(litellm_cache):
         log("INFO", f"Cleaning LiteLLM cache at {litellm_cache}...")
         try:
@@ -1188,6 +920,20 @@ def cmd_repair():
         except Exception as e:
             log("WARNING", f"Could not clean LiteLLM cache: {e}")
             
+    # 4. Check if virtual environment packages are intact
+    try:
+        import litellm
+        log("SUCCESS", "Python package dependencies verified successfully.")
+    except ImportError:
+        log("WARNING", "LiteLLM python package is missing. Attempting silent reinstall...")
+        venv_pip = os.path.join(ROOT_DIR, ".venv", "Scripts", "pip.exe")
+        if os.path.exists(venv_pip):
+            try:
+                subprocess.run([venv_pip, "install", "litellm[proxy]", "pyyaml", "requests"], check=True, capture_output=True)
+                log("SUCCESS", "LiteLLM package reinstalled successfully.")
+            except Exception as e:
+                log("ERROR", f"Failed to run package repair reinstall: {e}")
+                
     log("SUCCESS", "Self-healing checks completed.")
 
 def cmd_backup():
@@ -1202,31 +948,27 @@ def cmd_backup():
     
     try:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            # Backup OpenClawManager YAML files
             for file in ["settings.yaml", "providers.yaml", "models.yaml"]:
                 fp = os.path.join(CONFIG_DIR, file)
                 if os.path.exists(fp):
                     zipf.write(fp, arcname=os.path.join("OpenClawManager", file))
-            
-            # Backup generated files
             for file in ["config.yaml", "openclaw.json"]:
                 fp = os.path.join(GENERATED_DIR, file)
                 if os.path.exists(fp):
                     zipf.write(fp, arcname=os.path.join("generated", file))
-                    
-            # Backup active home folder config
             claw_home_dir = settings.get("openclaw", {}).get("config_dir")
             if not claw_home_dir:
-                claw_home_dir = os.path.join(get_user_home(), ".openclaw")
+                claw_home_dir = os.path.join(os.path.expanduser("~"), ".openclaw")
             claw_json = os.path.join(claw_home_dir, "openclaw.json")
             if os.path.exists(claw_json):
                 zipf.write(claw_json, arcname="active_openclaw.json")
-                
         log("SUCCESS", f"Backup archive created successfully: {zip_path}")
+        return zip_path
     except Exception as e:
         log("ERROR", f"Failed to create backup: {e}")
+        return None
 
-def cmd_restore():
+def cmd_restore(backup_idx=None):
     log("INFO", "Running configuration restore interface...")
     settings = load_yaml(SETTINGS_PATH)
     backup_dir = settings.get("lifecycle", {}).get("backup_dir", "backups")
@@ -1234,78 +976,75 @@ def cmd_restore():
     
     if not os.path.exists(backup_dir):
         log("ERROR", "No backup directory exists.")
-        return
+        return False
         
     zips = [f for f in os.listdir(backup_dir) if f.endswith(".zip")]
     if not zips:
         log("ERROR", "No backup zip archives found.")
-        return
+        return False
         
-    print("\nAvailable backups:")
-    for idx, zip_name in enumerate(zips):
-        print(f"[{idx}] {zip_name}")
+    if backup_idx is None:
+        print("\nAvailable backups:")
+        for idx, zip_name in enumerate(zips):
+            print(f"[{idx}] {zip_name}")
+            
+        choice = input("\nSelect backup index to restore (or Enter to cancel): ").strip()
+        if not choice or not choice.isdigit():
+            log("INFO", "Restore cancelled.")
+            return False
+        backup_idx = int(choice)
         
-    choice = input("\nSelect backup index to restore (or Enter to cancel): ").strip()
-    if not choice or not choice.isdigit():
-        log("INFO", "Restore cancelled.")
-        return
+    if backup_idx < 0 or backup_idx >= len(zips):
+        log("ERROR", f"Invalid backup index: {backup_idx}")
+        return False
         
-    idx = int(choice)
-    if idx < 0 or idx >= len(zips):
-        log("ERROR", "Invalid choice.")
-        return
-        
-    target_zip = os.path.join(backup_dir, zips[idx])
+    target_zip = os.path.join(backup_dir, zips[backup_idx])
     log("INFO", f"Restoring from archive: {target_zip}...")
     
     try:
-        # Create temp folder
         temp_dir = os.path.join(backup_dir, "temp_restore")
         os.makedirs(temp_dir, exist_ok=True)
         
         with zipfile.ZipFile(target_zip, "r") as zipf:
-            # Zip Slip Prevention: Verify all extraction paths stay inside target directory
+            # Zip Slip Prevention
             for member in zipf.infolist():
                 target_path = os.path.abspath(os.path.join(temp_dir, member.filename))
                 if not target_path.startswith(os.path.abspath(temp_dir)):
                     raise Exception(f"Security Warning: Path traversal detected in zip archive file: {member.filename}")
             zipf.extractall(temp_dir)
             
-        # Copy config folder files
         for f in ["settings.yaml", "providers.yaml", "models.yaml"]:
             src = os.path.join(temp_dir, "OpenClawManager", f)
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(CONFIG_DIR, f))
                 
-        # Copy active config file back
         claw_home_dir = settings.get("openclaw", {}).get("config_dir")
         if not claw_home_dir:
-            claw_home_dir = os.path.join(get_user_home(), ".openclaw")
-        
+            claw_home_dir = os.path.join(os.path.expanduser("~"), ".openclaw")
+            
         src_active = os.path.join(temp_dir, "active_openclaw.json")
         if os.path.exists(src_active):
             shutil.copy2(src_active, os.path.join(claw_home_dir, "openclaw.json"))
             
-        # Cleanup temp
         shutil.rmtree(temp_dir)
-        log("SUCCESS", "System configurations successfully restored.")
-        
-        # Regenerate configs
+        log("SUCCESS", "Configurations successfully restored.")
         cmd_configure()
+        return True
     except Exception as e:
         log("ERROR", f"Failed to restore configurations: {e}")
+        return False
 
 def cmd_upgrade():
     log("INFO", "Running package upgrade suite...")
-    
-    tools = discover_tools()
+    sys_details = discovery.run_all_discovery(SETTINGS_PATH)
+    tools = sys_details["tools"]
     
     # 1. Upgrade LiteLLM inside virtual environment
     venv_pip = os.path.join(ROOT_DIR, ".venv", "Scripts", "pip.exe")
     if os.path.exists(venv_pip):
         log("INFO", "Upgrading LiteLLM and PyYAML inside .venv...")
         try:
-            subprocess.run([venv_pip, "install", "--upgrade", "litellm[proxy]", "pyyaml"], check=True)
+            subprocess.run([venv_pip, "install", "--upgrade", "litellm[proxy]", "pyyaml", "requests"], check=True)
             log("SUCCESS", "LiteLLM upgraded in .venv.")
         except Exception as e:
             log("ERROR", f"Failed to upgrade python packages in .venv: {e}")
@@ -1319,7 +1058,6 @@ def cmd_upgrade():
         except Exception as e:
             log("ERROR", f"Failed to upgrade OpenClaw via npm: {e}")
             
-    # 3. Regenerate configs
     cmd_configure()
     log("SUCCESS", "Upgrade completed.")
 
@@ -1331,11 +1069,8 @@ def cmd_uninstall():
         return
         
     log("INFO", "Uninstalling packages...")
-    
-    # 1. Stop services
     cmd_stop()
     
-    # 2. Remove venv directory
     venv_dir = os.path.join(ROOT_DIR, ".venv")
     if os.path.exists(venv_dir):
         log("INFO", f"Removing virtual environment directory at {venv_dir}...")
@@ -1345,10 +1080,10 @@ def cmd_uninstall():
         except Exception as e:
             log("ERROR", f"Could not remove .venv: {e}")
             
-    # 3. Ask if they want to uninstall OpenClaw from npm
     uninstall_npm = input("Do you want to uninstall openclaw globally from npm? (yes/no): ").strip().lower()
     if uninstall_npm == "yes":
-        tools = discover_tools()
+        sys_details = discovery.run_all_discovery(SETTINGS_PATH)
+        tools = sys_details["tools"]
         if "npm" in tools:
             log("INFO", "Removing openclaw via npm...")
             try:
@@ -1357,23 +1092,19 @@ def cmd_uninstall():
             except Exception as e:
                 log("ERROR", f"Failed to uninstall openclaw npm package: {e}")
                 
-    # 4. Ask if they want to remove generated configs and home directory configs
     remove_configs = input("Do you want to remove generated and local configurations (~/.openclaw)? (yes/no): ").strip().lower()
     if remove_configs == "yes":
-        # remove generated dir
         if os.path.exists(GENERATED_DIR):
             shutil.rmtree(GENERATED_DIR)
-        claw_home = os.path.join(get_user_home(), ".openclaw")
+        claw_home = os.path.join(os.path.expanduser("~"), ".openclaw")
         if os.path.exists(claw_home):
             shutil.rmtree(claw_home)
         log("SUCCESS", "Configuration files removed.")
         
     log("SUCCESS", "Uninstall complete.")
 
-# --- CLI Router ---
-
 def main():
-    parser = argparse.ArgumentParser(description="OpenClaw Workstation Manager CLI")
+    parser = argparse.ArgumentParser(description="OpenClaw Workstation Lifecycle Manager CLI")
     parser.add_argument("command", choices=[
         "install", "configure", "start", "stop", "status", "diagnose", "repair", "backup", "restore", "upgrade", "uninstall"
     ], help="Command to run")

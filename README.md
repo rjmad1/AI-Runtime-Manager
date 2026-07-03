@@ -1,49 +1,46 @@
-# OpenClaw Workstation Lifecycle Manager
+# OpenClaw Workstation AI Runtime Manager (AIRM)
 
-A self-contained, enterprise-grade, self-healing Windows installer and service manager for OpenClaw and LiteLLM. 
+An enterprise-grade, zero-touch, self-healing Windows installer and daemon management center for OpenClaw, LiteLLM, and Ollama.
 
-This manager operates on a declarative basis: the only files you edit are `settings.yaml` and `providers.yaml` inside the `OpenClawManager/` folder. All complex configurations for LiteLLM (`config.yaml`) and OpenClaw (`openclaw.json`) are compiled and maintained automatically by the lifecycle core.
+AIRM automatically discovers operating system, CPU, GPU, VRAM, and RAM specs; validates cloud credentials in real-time; routes queries across providers with fallback safety; monitors daemon health; and auto-recovers from port locks and configuration drift.
 
 ---
 
-## 🚀 Quick Start (Single-Command Install)
+## 📖 System Documentation
 
-To deploy the entire workstation, dependencies, virtual environment, and configurations automatically on any clean Windows machine, open a PowerShell terminal and run:
+We have compiled comprehensive guides inside the **[`docs/`](file:///c:/Users/rajaj/Projects/OpenClaw%20InstallationEasyMethodLiteLLM/Installer%20Mode/docs/)** directory to help you deploy, configure, and maintain the ecosystem:
+
+1.  **[Ecosystem Introduction](file:///c:/Users/rajaj/Projects/OpenClaw%20InstallationEasyMethodLiteLLM/Installer%20Mode/docs/1_introduction.md)**: Explore the architectural layers of AIRM and audit what the platform can and cannot do.
+2.  **[Installation Instructions](file:///c:/Users/rajaj/Projects/OpenClaw%20InstallationEasyMethodLiteLLM/Installer%20Mode/docs/2_installation.md)**: Simple copy-paste commands to deploy system prerequisites and launch the browser control assistant.
+3.  **[Troubleshooting & Self-Healing](file:///c:/Users/rajaj/Projects/OpenClaw%20InstallationEasyMethodLiteLLM/Installer%20Mode/docs/3_troubleshooting.md)**: Diagnose port collisions, registry environment variable lag, and run automated self-repair.
+4.  **[Enterprise Use Cases](file:///c:/Users/rajaj/Projects/OpenClaw%20InstallationEasyMethodLiteLLM/Installer%20Mode/docs/4_use_cases.md)**: Real-world scenarios where AIRM's fallback routing and visual deployment shine.
+5.  **[Maximizing Value](file:///c:/Users/rajaj/Projects/OpenClaw%20InstallationEasyMethodLiteLLM/Installer%20Mode/docs/5_maximizing_value.md)**: Advanced tuning for LiteLLM routing, local model quantization checks, and backup scheduling.
+
+---
+
+## ⚡ Quick-Start (Single-Command Install)
+
+To deploy the entire workstation, virtual environment, and background daemons automatically, open a standard PowerShell terminal and run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/rjmad1/AI-Runtime-Manager/main/install.ps1 | iex"
 ```
 
-### What this does:
-1. Resolves the installation folder at `~/AI-Runtime-Manager` and retrieves the code from GitHub.
-2. Checks for and installs system prerequisites (Git, Python 3.11+, Node.js LTS, and `uv`) automatically.
-3. Spawns a **Visual Browser Assistant** to configure API keys for your enabled AI providers securely on your local machine.
-4. Compiles LiteLLM routing configurations (`config.yaml`) and maps fallbacks dynamically.
-5. Automatically merges configurations with your active OpenClaw settings.
+Once prerequisites are configured silently, this command launches the **Visual Setup Assistant** in your browser (`http://127.0.0.1:8500`) to validate credentials, map local models, and start the background services.
 
 ---
 
-## Service Management Commands
+## ⚙️ Service Command Wrappers
 
-Once installed, navigate to `~/AI-Runtime-Manager` and run the following batch command wrappers:
+AIRM runs services in independent process groups. Once installed, use the following batch scripts inside the workspace directory:
 
-*   **`Manage.bat start`** — Launches the LiteLLM Proxy in the background, polls for health, and boots the OpenClaw Gateway in the foreground.
-*   **`Manage.bat stop`** — Gracefully stops all active server processes and scavenges ports 4000/18789.
-*   **`Manage.bat status`** — Reports active process IDs and port bindings.
-*   **`Manage.bat configure`** — Compiles configuration outputs manually.
-*   **`Manage.bat backup`** — Creates a timestamped zip backup of your keys and YAML settings.
-*   **`Manage.bat restore`** — Interactively lists backups and performs a secure, Zip Slip protected restore.
-*   **`Diagnose.bat`** — Runs connection latency benchmarks against configured models and launches the HTML dashboard.
-*   **`Repair.bat`** — Automatically clears dangling processes, frees ports, audits config schemas, and clears caches.
-*   **`Upgrade.bat`** — Pulls the latest LiteLLM packages and updates the OpenClaw package version.
-*   **`Uninstall.bat`** — Shuts down servers, cleans environment configurations, and removes the workspace.
-
----
-
-## Configuration Files
-
-All editable settings reside in the **`OpenClawManager/`** directory:
-
-1.  **`settings.yaml`**: Customize port configurations, log levels, backup destinations, and Ollama integration settings.
-2.  **`providers.yaml`**: Toggle API provider integrations (Gemini, Groq, SambaNova, Cerebras, OpenRouter).
-3.  **`models.yaml`**: Configure models routing, context limits, and active fallback models (e.g. falling back from Gemini to Groq).
+*   **`Manage.bat start`** — Launches the LiteLLM Proxy and OpenClaw Gateway as background daemons and polls readiness.
+*   **`Manage.bat stop`** — Terminates active background processes and releases port bindings.
+*   **`Manage.bat status`** — Reports active daemon process IDs and TCP listener ports.
+*   **`Manage.bat configure`** — Manually compiles LiteLLM configurations and active settings maps.
+*   **`Manage.bat backup`** — Generates a timestamped zip backup of active blueprints.
+*   **`Manage.bat restore`** — Interactively lists backups and performs a secure restore.
+*   **`Diagnose.bat`** — Runs connection latency benchmarks against active model endpoints.
+*   **`Repair.bat`** — Executes automated self-healing (frees port conflicts, checks YAML schemas, resets caches).
+*   **`Upgrade.bat`** — Pulls package upgrades inside the virtual environment.
+*   **`Uninstall.bat`** — Shuts down stack daemons, cleans environment variables, and removes files.
