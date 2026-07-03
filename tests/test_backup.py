@@ -2,11 +2,7 @@
 # Unit tests for core/backup.py — backup creation and restore with Zip Slip prevention.
 
 import os
-import sys
 import zipfile
-import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 
 class TestBackupCreate:
@@ -28,17 +24,15 @@ class TestBackupCreate:
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
-        backup_dir = tmp_path / "backups"
-
         # Monkey-patch constants
-        monkeypatch.setattr("config.ROOT_DIR", str(tmp_path))
-        monkeypatch.setattr("config.CONFIG_DIR", str(config_dir))
-        monkeypatch.setattr("config.GENERATED_DIR", str(generated_dir))
-        monkeypatch.setattr("config.LOGS_DIR", str(logs_dir))
-        monkeypatch.setattr("config.SETTINGS_PATH", str(config_dir / "settings.yaml"))
-        monkeypatch.setattr("config.LOG_FILE", str(logs_dir / "installer.log"))
+        monkeypatch.setattr("core.config.ROOT_DIR", str(tmp_path))
+        monkeypatch.setattr("core.config.CONFIG_DIR", str(config_dir))
+        monkeypatch.setattr("core.config.GENERATED_DIR", str(generated_dir))
+        monkeypatch.setattr("core.config.LOGS_DIR", str(logs_dir))
+        monkeypatch.setattr("core.config.SETTINGS_PATH", str(config_dir / "settings.yaml"))
+        monkeypatch.setattr("core.config.LOG_FILE", str(logs_dir / "installer.log"))
 
-        from backup import cmd_backup
+        from core.backup import cmd_backup
         zip_path = cmd_backup()
 
         assert zip_path is not None
@@ -75,14 +69,14 @@ class TestZipSlipPrevention:
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
-        monkeypatch.setattr("config.ROOT_DIR", str(tmp_path))
-        monkeypatch.setattr("config.CONFIG_DIR", str(config_dir))
-        monkeypatch.setattr("config.SETTINGS_PATH", str(config_dir / "settings.yaml"))
-        monkeypatch.setattr("config.LOG_FILE", str(logs_dir / "installer.log"))
+        monkeypatch.setattr("core.config.ROOT_DIR", str(tmp_path))
+        monkeypatch.setattr("core.config.CONFIG_DIR", str(config_dir))
+        monkeypatch.setattr("core.config.SETTINGS_PATH", str(config_dir / "settings.yaml"))
+        monkeypatch.setattr("core.config.LOG_FILE", str(logs_dir / "installer.log"))
 
         # Mock cmd_configure to avoid side effects
-        monkeypatch.setattr("config.cmd_configure", lambda: None)
+        monkeypatch.setattr("core.config.cmd_configure", lambda: None)
 
-        from backup import cmd_restore
+        from core.backup import cmd_restore
         result = cmd_restore(backup_idx=0)
         assert not result  # Should fail due to Zip Slip detection

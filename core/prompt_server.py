@@ -2,21 +2,22 @@
 # HTTP control plane and web dashboard server for AIRM.
 # The HTML dashboard is loaded from core/templates/dashboard.html.
 
-import os
-import sys
 import json
-import time
+import os
+import secrets
 import threading
+import time
 import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Optional
 
-# Ensure core/ is on the import path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import manager  # noqa: E402  — thin re-export layer
-import discovery  # noqa: E402
-from validation import validate_provider_key_http  # noqa: E402
+from . import (
+    discovery,
+    manager,  # thin re-export layer
+)
+from .config import _validate_provider_name
+from .diagnostics import LiteLLMOfflineError
+from .validation import validate_provider_key_http
 
 # ── Thread-safe installation progress state ──
 _install_lock = threading.Lock()
@@ -33,6 +34,26 @@ INSTALL_STATE: Dict[str, Any] = {
 _discovery_cache: Optional[Dict[str, Any]] = None
 _discovery_cache_time: float = 0
 _DISCOVERY_TTL_SECONDS: int = 30
+
+# ── Authentication Token ──
+# Session-scoped anti-CSRF token: generated fresh on every server start,
+# handed to the browser via the URL fragment, required on state-changing POSTs.
+_AUTH_TOKEN: Optional[str] = None
+_AUTH_TOKEN_LOCK = threading.Lock()
+
+def _get_auth_token() -> str:
+    """Get or generate the session authentication token."""
+    global _AUTH_TOKEN
+    with _AUTH_TOKEN_LOCK:
+        if _AUTH_TOKEN is None:
+            _AUTH_TOKEN = secrets.token_hex(24)
+        return _AUTH_TOKEN
+
+def _validate_auth_token(token: str) -> bool:
+    """Validate authentication token."""
+    if not token:
+        return False
+    return secrets.compare_digest(token, _get_auth_token())
 
 
 def _get_cached_discovery(force: bool = False) -> Dict[str, Any]:
@@ -123,6 +144,21 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _check_auth(self) -> bool:
+        """Check authentication token in headers."""
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            return _validate_auth_token(token)
+        return False
+
+    def _require_auth(self) -> bool:
+        """Require authentication, send 401 if missing."""
+        if not self._check_auth():
+            self._send_json({"error": "Unauthorized", "message": "Authentication required"}, 401)
+            return False
+        return True
+
     def _read_json_body(self) -> Dict[str, Any]:
         """Read and parse JSON from the request body."""
         length = int(self.headers.get("Content-Length", 0))
@@ -188,9 +224,16 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _handle_post_providers_validate(self) -> None:
+        if not self._require_auth():
+            return
         body = self._read_json_body()
         provider = body.get("provider", "")
         api_key = body.get("api_key", "")
+
+        # Validate provider name to prevent injection
+        if not _validate_provider_name(provider):
+            self._send_json({"success": False, "message": "Invalid provider name"}, 400)
+            return
 
         success, message = validate_provider_key_http(provider, api_key)
         if success:
@@ -201,9 +244,16 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"success": success, "message": message})
 
     def _handle_post_providers_toggle(self) -> None:
+        if not self._require_auth():
+            return
         body = self._read_json_body()
         provider = body.get("provider", "")
         enabled = body.get("enabled", False)
+
+        # Validate provider name
+        if not _validate_provider_name(provider):
+            self._send_json({"success": False, "message": "Invalid provider name"}, 400)
+            return
 
         providers = manager.load_yaml(manager.PROVIDERS_PATH)
         if provider in providers and isinstance(providers[provider], dict):
@@ -212,6 +262,8 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"success": True})
 
     def _handle_post_install(self) -> None:
+        if not self._require_auth():
+            return
         # Pre-flight check: ensure at least one API key is present OR ollama has models
         providers = manager.load_yaml(manager.PROVIDERS_PATH)
         has_keys = False
@@ -243,8 +295,16 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"success": True})
 
     def _handle_post_control(self) -> None:
+        if not self._require_auth():
+            return
         body = self._read_json_body()
         action = body.get("action", "")
+
+        # Validate action
+        if action not in ["start", "stop", "restart"]:
+            self._send_json({"success": False, "message": "Invalid action"}, 400)
+            return
+
         if action == "start":
             manager.cmd_start()
         elif action == "stop":
@@ -256,7 +316,10 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         """Handle POST requests."""
-        if self.path == "/api/providers/validate":
+        if self.path == "/api/auth/check":
+            if self._require_auth():
+                self._send_json({"success": True})
+        elif self.path == "/api/providers/validate":
             self._handle_post_providers_validate()
         elif self.path == "/api/providers/toggle":
             self._handle_post_providers_toggle()
@@ -265,19 +328,31 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/control":
             self._handle_post_control()
         elif self.path == "/api/repair":
-            from cli import cmd_repair
+            if not self._require_auth():
+                return
+            from .cli import cmd_repair
             cmd_repair()
             self._send_json({"success": True})
         elif self.path == "/api/backup":
+            if not self._require_auth():
+                return
             zip_path = manager.cmd_backup()
             self._send_json({"success": bool(zip_path), "path": zip_path or ""})
         elif self.path == "/api/restore":
+            if not self._require_auth():
+                return
             body = self._read_json_body()
             idx = body.get("index", 0)
             ok = manager.cmd_restore(idx)
             self._send_json({"success": ok})
         elif self.path == "/api/diagnose":
-            manager.cmd_diagnose()
+            if not self._require_auth():
+                return
+            try:
+                manager.cmd_diagnose()
+            except LiteLLMOfflineError as e:
+                self._send_json({"success": False, "message": str(e)})
+                return
             self._send_json({"success": True})
         else:
             self.send_error(404)
@@ -285,12 +360,18 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
 
 def run_prompt_server(port: int = 8500) -> None:
     """Start the AIRM dashboard HTTP server and open the browser."""
+    manager.ensure_runtime_dirs()
+    token = _get_auth_token()
     manager.log("INFO", f"Starting AIRM Web Dashboard on http://127.0.0.1:{port}")
+    manager.log("INFO", f"Dashboard Auth Token: {token}")
+    manager.log("INFO", "Copy the token above into the dashboard login prompt.")
     manager.log("INFO", "Press Ctrl+C to stop the dashboard server.")
 
     httpd = HTTPServer(("127.0.0.1", port), PromptRequestHandler)
 
-    webbrowser.open(f"http://127.0.0.1:{port}")
+    # Token rides in the URL fragment: never sent over the network, read once
+    # by the dashboard JS for automatic login, then stripped from the URL.
+    webbrowser.open(f"http://127.0.0.1:{port}/#token={token}")
 
     try:
         while True:

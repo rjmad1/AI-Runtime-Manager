@@ -4,7 +4,8 @@
 litellm:
   host: "127.0.0.1"
   port: 4000
-  api_key: "sk-litellm-key"
+  # API key is auto-generated on first configure - DO NOT set default value
+  api_key: ""
   set_verbose: false
   drop_params: true
   routing_strategy: "latency-based-routing"

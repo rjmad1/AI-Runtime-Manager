@@ -2,9 +2,20 @@
 # Provider API key validation with real HTTP endpoint checks.
 
 import json
-import urllib.request
+import re
 import urllib.error
+import urllib.request
 from typing import Tuple
+
+# Provider name validation pattern
+_VALID_PROVIDER_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def _validate_provider(provider: str) -> bool:
+    """Validate provider name to prevent injection attacks."""
+    if not provider or len(provider) > 50:
+        return False
+    return bool(_VALID_PROVIDER_PATTERN.match(provider))
 
 
 def validate_provider_key_http(provider: str, api_key: str) -> Tuple[bool, str]:
@@ -12,6 +23,10 @@ def validate_provider_key_http(provider: str, api_key: str) -> Tuple[bool, str]:
 
     Returns (success: bool, message: str).
     """
+    # Validate provider name
+    if not _validate_provider(provider):
+        return False, "Invalid provider name."
+
     if not api_key or len(api_key.strip()) < 8:
         return False, "Key is too short or empty."
 
@@ -28,7 +43,7 @@ def validate_provider_key_http(provider: str, api_key: str) -> Tuple[bool, str]:
                     "x-goog-api-key": api_key,
                 },
             )
-            with urllib.request.urlopen(req, timeout=10.0) as res:
+            with urllib.request.urlopen(req, timeout=10.0):
                 return True, "Key is valid."
 
         elif provider == "groq":
@@ -40,7 +55,7 @@ def validate_provider_key_http(provider: str, api_key: str) -> Tuple[bool, str]:
             }).encode("utf-8")
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10.0) as res:
+            with urllib.request.urlopen(req, timeout=10.0):
                 return True, "Key is valid."
 
         elif provider == "sambanova":
@@ -52,7 +67,7 @@ def validate_provider_key_http(provider: str, api_key: str) -> Tuple[bool, str]:
             }).encode("utf-8")
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10.0) as res:
+            with urllib.request.urlopen(req, timeout=10.0):
                 return True, "Key is valid."
 
         elif provider == "cerebras":
@@ -64,14 +79,14 @@ def validate_provider_key_http(provider: str, api_key: str) -> Tuple[bool, str]:
             }).encode("utf-8")
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10.0) as res:
+            with urllib.request.urlopen(req, timeout=10.0):
                 return True, "Key is valid."
 
         elif provider == "openrouter":
             url = "https://openrouter.ai/api/v1/auth/key"
             headers = {"Authorization": f"Bearer {api_key}"}
             req = urllib.request.Request(url, headers=headers, method="GET")
-            with urllib.request.urlopen(req, timeout=10.0) as res:
+            with urllib.request.urlopen(req, timeout=10.0):
                 return True, "Key is valid."
 
         return True, "Form check succeeded (no live endpoint test implemented)."

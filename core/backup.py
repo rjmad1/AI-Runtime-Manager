@@ -2,16 +2,17 @@
 # Configuration backup and restore for AIRM.
 
 import os
-import sys
-import json
 import shutil
 import zipfile
 from datetime import datetime
 from typing import Optional
 
-import config
-from config import (
-    log, load_yaml, cmd_configure,
+from . import config
+from .config import (
+    _is_safe_path,
+    cmd_configure,
+    load_yaml,
+    log,
 )
 
 OPENCLAW_JSON_FILE = "openclaw.json"
@@ -55,7 +56,7 @@ def _restore_from_zip(target_zip: str, backup_dir: str, settings: dict) -> None:
     os.makedirs(temp_dir, exist_ok=True)
 
     with zipfile.ZipFile(target_zip, "r") as zipf:
-        # Zip Slip Prevention
+        # Zip Slip Prevention - validate all paths
         for member in zipf.infolist():
             target_path = os.path.abspath(os.path.join(temp_dir, member.filename))
             if not target_path.startswith(os.path.abspath(temp_dir)):
@@ -67,6 +68,9 @@ def _restore_from_zip(target_zip: str, backup_dir: str, settings: dict) -> None:
     for f in ["settings.yaml", "providers.yaml", "models.yaml"]:
         src = os.path.join(temp_dir, "OpenClawManager", f)
         if os.path.exists(src):
+            # Validate path before copying
+            if not _is_safe_path(src, temp_dir):
+                raise ValueError(f"Security Warning: Invalid path in backup: {src}")
             shutil.copy2(src, os.path.join(config.CONFIG_DIR, f))
 
     claw_home_dir: str = settings.get("openclaw", {}).get("config_dir") or ""
@@ -75,6 +79,8 @@ def _restore_from_zip(target_zip: str, backup_dir: str, settings: dict) -> None:
 
     src_active = os.path.join(temp_dir, "active_openclaw.json")
     if os.path.exists(src_active):
+        if not _is_safe_path(src_active, temp_dir):
+            raise ValueError(f"Security Warning: Invalid path in backup: {src_active}")
         shutil.copy2(src_active, os.path.join(claw_home_dir, OPENCLAW_JSON_FILE))
 
     shutil.rmtree(temp_dir)

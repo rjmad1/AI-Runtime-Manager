@@ -1,15 +1,10 @@
 # tests/test_validation.py
 # Unit tests for core/validation.py — provider key validation.
 
-import os
-import sys
-import pytest
-from unittest.mock import patch, MagicMock
 import urllib.error
+from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
-
-from validation import validate_provider_key_http
+from core.validation import validate_provider_key_http
 
 
 class TestValidateProviderKey:
@@ -28,7 +23,7 @@ class TestValidateProviderKey:
 
     def test_gemini_uses_header_not_url(self):
         """Gemini validation should use x-goog-api-key header, NOT URL query param."""
-        with patch("validation.urllib.request.urlopen") as mock_open:
+        with patch("core.validation.urllib.request.urlopen") as mock_open:
             mock_response = MagicMock()
             mock_response.__enter__ = MagicMock(return_value=mock_response)
             mock_response.__exit__ = MagicMock(return_value=False)
@@ -50,7 +45,7 @@ class TestValidateProviderKey:
 
     def test_groq_uses_bearer_auth(self):
         """Groq validation should use Bearer token auth."""
-        with patch("validation.urllib.request.urlopen") as mock_open:
+        with patch("core.validation.urllib.request.urlopen") as mock_open:
             mock_response = MagicMock()
             mock_response.__enter__ = MagicMock(return_value=mock_response)
             mock_response.__exit__ = MagicMock(return_value=False)
@@ -65,7 +60,7 @@ class TestValidateProviderKey:
 
     def test_http_error_returns_failure(self):
         """HTTP errors should return (False, error_message)."""
-        with patch("validation.urllib.request.urlopen") as mock_open:
+        with patch("core.validation.urllib.request.urlopen") as mock_open:
             error_body = b'{"error": {"message": "Invalid API key"}}'
             mock_open.side_effect = urllib.error.HTTPError(
                 url="https://example.com",

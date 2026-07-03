@@ -9,6 +9,7 @@ if "%~1"=="" (
     echo   Manage.bat start     - Start LiteLLM + OpenClaw servers
     echo   Manage.bat stop      - Force stop all running servers
     echo   Manage.bat status    - Check running components status
+    echo   Manage.bat watch     - Self-healing watchdog: auto-restart crashed daemons
     echo   Manage.bat configure - Regenerate configuration files
     echo   Manage.bat diagnose  - Run latency connectivity benchmarks
     echo   Manage.bat repair    - Run self-healing and check prerequisites
@@ -25,4 +26,6 @@ if not exist "%~dp0.venv\Scripts\python.exe" (
     exit /b 1
 )
 
-"%~dp0.venv\Scripts\python.exe" "%~dp0core\manager.py" %*
+pushd "%~dp0"
+".venv\Scripts\python.exe" -m core.manager %*
+popd

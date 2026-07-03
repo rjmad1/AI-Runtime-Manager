@@ -524,6 +524,25 @@
             margin: 0.75rem 0;
         }
 
+        /* Login overlay */
+        .login-overlay {
+            position: fixed; inset: 0;
+            background: rgba(11,15,25,0.97);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 99999;
+        }
+        .login-box {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 2.5rem;
+            width: 420px;
+            text-align: center;
+        }
+        .login-box h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; }
+        .login-box p { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
+        .login-error { color: var(--error); font-size: 0.85rem; margin-top: 0.75rem; display: none; }
+
         /* Custom notifications */
         .alert-box {
             position: fixed;
@@ -560,6 +579,20 @@
     </style>
 </head>
 <body>
+    <!-- Login Overlay -->
+    <div id="login-overlay" class="login-overlay">
+        <div class="login-box">
+            <div class="brand-logo" style="margin: 0 auto 1rem; width:40px; height:40px;"></div>
+            <h2>AIRM Dashboard</h2>
+            <p>Enter the auth token printed in your terminal to continue.</p>
+            <div class="key-input-group" style="flex-direction:column;">
+                <input type="password" id="login-token" placeholder="Paste auth token here..." style="width:100%;" />
+                <button class="btn btn-primary" onclick="submitLogin()" style="width:100%; justify-content:center;">Unlock Dashboard</button>
+            </div>
+            <div id="login-error" class="login-error">Invalid token. Check your terminal output.</div>
+        </div>
+    </div>
+
     <!-- Sidebar Navigation -->
     <div class="sidebar">
         <div class="brand">
@@ -740,6 +773,58 @@
 
     <!-- JavaScript logic -->
     <script>
+        // ── Session auth: every fetch carries the Bearer token required by
+        //    the server on state-changing POST routes (anti-CSRF).
+        let AUTH_TOKEN = sessionStorage.getItem('airm_token') || '';
+        const _origFetch = window.fetch.bind(window);
+        window.fetch = (url, opts = {}) => {
+            if (AUTH_TOKEN) {
+                opts.headers = Object.assign({}, opts.headers, { 'Authorization': 'Bearer ' + AUTH_TOKEN });
+            }
+            return _origFetch(url, opts);
+        };
+
+        async function _verifyToken(token) {
+            try {
+                const res = await _origFetch('/api/auth/check', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                return res.ok;
+            } catch (e) { return false; }
+        }
+
+        function _unlock(token) {
+            AUTH_TOKEN = token;
+            sessionStorage.setItem('airm_token', token);
+            document.getElementById('login-overlay').style.display = 'none';
+        }
+
+        async function submitLogin() {
+            const token = document.getElementById('login-token').value.trim();
+            if (token && await _verifyToken(token)) {
+                _unlock(token);
+            } else {
+                document.getElementById('login-error').style.display = 'block';
+            }
+        }
+
+        // Auto-login: server opens the browser with the token in the URL
+        // fragment (never sent over the network); fall back to stored session.
+        (async () => {
+            const hashMatch = location.hash.match(/^#token=([0-9a-f]+)$/);
+            if (hashMatch) {
+                history.replaceState(null, '', location.pathname);
+                if (await _verifyToken(hashMatch[1])) { _unlock(hashMatch[1]); return; }
+            }
+            if (AUTH_TOKEN && await _verifyToken(AUTH_TOKEN)) {
+                document.getElementById('login-overlay').style.display = 'none';
+            } else {
+                AUTH_TOKEN = '';
+                sessionStorage.removeItem('airm_token');
+            }
+        })();
+
         let currentTab = 'tab-welcome';
         
         function switchTab(tabId) {

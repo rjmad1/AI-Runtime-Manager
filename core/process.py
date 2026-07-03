@@ -1,22 +1,27 @@
 # core/process.py
 # Process lifecycle, port management, and service daemon control for AIRM.
 
-import os
-import sys
-import re
 import json
-import time
+import os
 import platform
 import subprocess
+import time
 import urllib.request
-import psutil
 from typing import Any, Dict, List, Optional
 
-from config import (
-    CORE_DIR, ROOT_DIR, LOGS_DIR,
-    SETTINGS_PATH, PROVIDERS_PATH,
-    LITELLM_CONFIG_PATH, SERVICES_STATE_PATH,
-    log, load_yaml, get_windows_env, cmd_configure,
+import psutil
+
+from .config import (
+    LITELLM_CONFIG_PATH,
+    LOGS_DIR,
+    PROVIDERS_PATH,
+    ROOT_DIR,
+    SERVICES_STATE_PATH,
+    SETTINGS_PATH,
+    cmd_configure,
+    get_windows_env,
+    load_yaml,
+    log,
 )
 
 
@@ -83,17 +88,17 @@ def kill_process_tree(pid: int) -> bool:
         if not is_pid_running(pid):
             return True
         log("INFO", f"Terminating PID {pid} and its children gracefully...")
-        
+
         parent = psutil.Process(pid)
         children = parent.children(recursive=True)
-        
+
         for child in children:
             try:
                 child.terminate()
             except psutil.NoSuchProcess:
                 pass
         parent.terminate()
-        
+
         gone, alive = psutil.wait_procs(children + [parent], timeout=3)
         for p in alive:
             log("WARNING", f"PID {p.pid} still alive. Force killing...")
@@ -132,17 +137,18 @@ def _spawn_litellm(litellm_port: int) -> subprocess.Popen:
             python_exe = "python"
         litellm_args = [python_exe, "-m", "litellm", "--config", LITELLM_CONFIG_PATH, "--port", str(litellm_port)]
 
-    litellm_log = open(os.path.join(LOGS_DIR, "litellm.log"), "w", encoding="utf-8")
-    try:
-        litellm_flags = 0x00000008 | 0x00000200 | 0x01000000 if platform.system() == "Windows" else 0
-        litellm_proc = subprocess.Popen(
-            litellm_args, stdout=litellm_log, stderr=litellm_log,
-            creationflags=litellm_flags, close_fds=True,
-        )
-    except Exception as e:
-        litellm_log.close()
-        log("ERROR", f"Failed to spawn LiteLLM daemon: {e}")
-        raise RuntimeError("LiteLLM daemon failed to spawn.")
+    # Popen duplicates the handle into the child, so the parent's file object
+    # is always closed here — repeated start/stop cycles must not leak fds.
+    with open(os.path.join(LOGS_DIR, "litellm.log"), "w", encoding="utf-8") as litellm_log:
+        try:
+            litellm_flags = 0x00000008 | 0x00000200 | 0x01000000 if platform.system() == "Windows" else 0
+            litellm_proc = subprocess.Popen(
+                litellm_args, stdout=litellm_log, stderr=litellm_log,
+                creationflags=litellm_flags, close_fds=True,
+            )
+        except Exception as e:
+            log("ERROR", f"Failed to spawn LiteLLM daemon: {e}")
+            raise RuntimeError("LiteLLM daemon failed to spawn.")
 
     log("INFO", "Polling LiteLLM Proxy readiness...")
     ready = False
@@ -188,19 +194,19 @@ def _spawn_openclaw(openclaw_port: int, discovery: Any, litellm_pid: int) -> sub
         openclaw_exe = "cmd.exe"
         openclaw_cmd_args = ["/c", "openclaw", "gateway", "--port", str(openclaw_port)]
 
-    openclaw_log = open(os.path.join(LOGS_DIR, "openclaw.log"), "w", encoding="utf-8")
-    try:
-        openclaw_flags = 0x00000008 | 0x00000200 | 0x01000000 if platform.system() == "Windows" else 0
-        openclaw_proc = subprocess.Popen(
-            [openclaw_exe] + openclaw_cmd_args,
-            stdout=openclaw_log, stderr=openclaw_log,
-            creationflags=openclaw_flags, close_fds=True,
-        )
-    except Exception as e:
-        openclaw_log.close()
-        log("ERROR", f"Failed to spawn OpenClaw daemon: {e}")
-        kill_process_tree(litellm_pid)
-        raise RuntimeError("OpenClaw daemon failed to spawn.")
+    # Same handle discipline as _spawn_litellm: child inherits, parent closes.
+    with open(os.path.join(LOGS_DIR, "openclaw.log"), "w", encoding="utf-8") as openclaw_log:
+        try:
+            openclaw_flags = 0x00000008 | 0x00000200 | 0x01000000 if platform.system() == "Windows" else 0
+            openclaw_proc = subprocess.Popen(
+                [openclaw_exe] + openclaw_cmd_args,
+                stdout=openclaw_log, stderr=openclaw_log,
+                creationflags=openclaw_flags, close_fds=True,
+            )
+        except Exception as e:
+            log("ERROR", f"Failed to spawn OpenClaw daemon: {e}")
+            kill_process_tree(litellm_pid)
+            raise RuntimeError("OpenClaw daemon failed to spawn.")
 
     log("INFO", "Polling OpenClaw Gateway readiness...")
     oc_ready = False
@@ -224,11 +230,7 @@ def cmd_start() -> None:
     """Start LiteLLM and OpenClaw daemon processes."""
     log("INFO", "Starting AIRM system stack daemons...")
 
-    try:
-        import discovery
-    except ImportError:
-        sys.path.append(CORE_DIR)
-        import discovery
+    from . import discovery
 
     settings = load_yaml(SETTINGS_PATH)
     litellm_port: int = settings.get("litellm", {}).get("port", 4000)
@@ -284,6 +286,16 @@ def cmd_stop() -> None:
     log("SUCCESS", "All services stopped.")
 
 
+def litellm_ready(port: int, timeout: float = 2.0) -> bool:
+    """Probe the LiteLLM readiness endpoint (deeper signal than a port check)."""
+    try:
+        req = urllib.request.Request(f"http://localhost:{port}/health/readiness")
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return "healthy" in res.read().decode().lower()
+    except Exception:
+        return False
+
+
 def cmd_status() -> Dict[str, Any]:
     """Report the runtime state of daemon processes."""
     log("INFO", "Inspecting runtime state...")
@@ -302,15 +314,70 @@ def cmd_status() -> Dict[str, Any]:
 
     l_status = "ONLINE" if (l_alive or l_pids_on_port) else "OFFLINE"
     c_status = "ONLINE" if (c_alive or c_pids_on_port) else "OFFLINE"
+    # A listening port can still hide a wedged proxy — probe the HTTP endpoint
+    l_ready = litellm_ready(litellm_port) if l_status == "ONLINE" else False
 
     print("\n==============================================")
     print("      AIRM Server Daemon Status Dashboard")
     print("==============================================")
-    print(f"LiteLLM Proxy (Port {litellm_port}):     {l_status} (PID: {l_pid or 'N/A'}, Active on Port: {l_pids_on_port})")
+    print(f"LiteLLM Proxy (Port {litellm_port}):     {l_status} (PID: {l_pid or 'N/A'}, Active on Port: {l_pids_on_port}, Readiness: {'HEALTHY' if l_ready else 'UNRESPONSIVE' if l_status == 'ONLINE' else 'N/A'})")
     print(f"OpenClaw Gateway (Port {openclaw_port}):  {c_status} (PID: {c_pid or 'N/A'}, Active on Port: {c_pids_on_port})")
     print("==============================================")
 
     return {
-        "litellm": {"status": l_status, "pid": l_pid, "pids_on_port": l_pids_on_port},
+        "litellm": {"status": l_status, "pid": l_pid, "pids_on_port": l_pids_on_port, "ready": l_ready},
         "openclaw": {"status": c_status, "pid": c_pid, "pids_on_port": c_pids_on_port},
     }
+
+
+def _stack_health() -> Dict[str, bool]:
+    """Liveness of each daemon: tracked PID alive or something listening on its port."""
+    settings = load_yaml(SETTINGS_PATH)
+    state = load_services_state()
+    litellm_port: int = settings.get("litellm", {}).get("port", 4000)
+    openclaw_port: int = settings.get("openclaw", {}).get("port", 18789)
+    return {
+        "litellm": is_pid_running(state.get("litellm")) or bool(get_pids_on_port(litellm_port)),
+        "openclaw": is_pid_running(state.get("openclaw")) or bool(get_pids_on_port(openclaw_port)),
+    }
+
+
+def check_and_heal() -> bool:
+    """One watchdog pass. Returns True when the stack is (or was restored to) healthy.
+
+    Restarts the whole stack rather than a single daemon: OpenClaw depends on
+    LiteLLM and cmd_start already handles ordering, port scavenging, and config
+    recompilation.
+    """
+    health = _stack_health()
+    if all(health.values()):
+        return True
+    down = ", ".join(name for name, ok in health.items() if not ok)
+    log("WARNING", f"Watchdog: {down} offline. Restarting service stack...")
+    try:
+        cmd_stop()
+        cmd_start()
+        return all(_stack_health().values())
+    except Exception as e:
+        log("ERROR", f"Watchdog restart failed: {e}")
+        return False
+
+
+def cmd_watch(poll_seconds: int = 15) -> None:
+    """Supervise the daemons and auto-restart them when they die (self-healing loop)."""
+    log("INFO", f"AIRM watchdog active (polling every {poll_seconds}s). Press Ctrl+C to stop.")
+    consecutive_failures = 0
+    try:
+        while True:
+            if check_and_heal():
+                consecutive_failures = 0
+                delay = poll_seconds
+            else:
+                consecutive_failures += 1
+                # Exponential backoff, capped at 5 min, so a hard-broken stack
+                # is not restart-hammered in a tight loop.
+                delay = min(poll_seconds * (2 ** consecutive_failures), 300)
+                log("WARNING", f"Watchdog: stack still unhealthy ({consecutive_failures} consecutive failures). Next attempt in {delay}s.")
+            time.sleep(delay)
+    except KeyboardInterrupt:
+        log("INFO", "Watchdog stopped by user.")

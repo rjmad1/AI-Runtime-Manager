@@ -1,15 +1,11 @@
 # tests/test_config.py
 # Unit tests for core/config.py — YAML I/O, logging, env var helpers.
 
+import importlib
 import os
-import sys
-import tempfile
-import pytest
 
-# Add core/ to path for direct imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
-
-from config import load_yaml, save_yaml, log, set_windows_env, get_windows_env, LOG_FILE
+import core.config
+from core.config import load_yaml, log, save_yaml, set_windows_env
 
 
 class TestLoadYaml:
@@ -67,19 +63,21 @@ class TestLog:
     def test_log_writes_to_file(self, tmp_path, monkeypatch):
         """log should append messages to the log file."""
         log_path = str(tmp_path / "test.log")
-        monkeypatch.setattr("config.LOG_FILE", log_path)
+        monkeypatch.setattr("core.config.LOG_FILE", log_path)
         log("INFO", "Test message")
         assert os.path.exists(log_path)
-        content = open(log_path, "r").read()
+        with open(log_path, "r", encoding="utf-8") as f:
+            content = f.read()
         assert "Test message" in content
         assert "[INFO]" in content
 
     def test_log_masks_api_keys(self, tmp_path, monkeypatch):
         """log should mask API keys in output."""
         log_path = str(tmp_path / "mask.log")
-        monkeypatch.setattr("config.LOG_FILE", log_path)
+        monkeypatch.setattr("core.config.LOG_FILE", log_path)
         log("INFO", "Key is sk-abcdefghijkl1234567890")
-        content = open(log_path, "r").read()
+        with open(log_path, "r", encoding="utf-8") as f:
+            content = f.read()
         assert "sk-abcdefghijkl..." in content
         assert "1234567890" not in content
 
@@ -97,7 +95,7 @@ class TestSetWindowsEnv:
                 returncode = 0
             return FakeResult()
 
-        monkeypatch.setattr("config.subprocess.run", mock_run)
+        monkeypatch.setattr("core.config.subprocess.run", mock_run)
         set_windows_env("TEST_KEY", "value'with;injection")
 
         assert len(captured_cmds) == 1
@@ -112,8 +110,29 @@ class TestSetWindowsEnv:
                 returncode = 0
             return FakeResult()
 
-        monkeypatch.setattr("config.subprocess.run", mock_run)
+        monkeypatch.setattr("core.config.subprocess.run", mock_run)
         set_windows_env("TEST_ENV_VAR", "test_value")
         assert os.environ.get("TEST_ENV_VAR") == "test_value"
         # Cleanup
-        del os.environ["TEST_ENV_VAR"]
+        if "TEST_ENV_VAR" in os.environ:
+            del os.environ["TEST_ENV_VAR"]
+
+
+class TestRuntimeDirs:
+    """Directory creation must be explicit, never an import side effect."""
+
+    def test_import_does_not_create_directories(self, monkeypatch):
+        """Re-executing the module body must not call os.makedirs."""
+        calls = []
+        monkeypatch.setattr(os, "makedirs", lambda *a, **k: calls.append(a))
+        importlib.reload(core.config)
+        assert calls == []
+
+    def test_ensure_runtime_dirs_creates_directories(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("core.config.CONFIG_DIR", str(tmp_path / "cfg"))
+        monkeypatch.setattr("core.config.GENERATED_DIR", str(tmp_path / "gen"))
+        monkeypatch.setattr("core.config.LOGS_DIR", str(tmp_path / "logs"))
+        core.config.ensure_runtime_dirs()
+        assert (tmp_path / "cfg").is_dir()
+        assert (tmp_path / "gen").is_dir()
+        assert (tmp_path / "logs").is_dir()

@@ -14,8 +14,11 @@ if %ERRORLEVEL% neq 0 (
 )
 
 :: 2. Run the Python interactive installer in the .venv
+:: (run from repo root so `core` resolves as a package)
 if exist "%~dp0.venv\Scripts\python.exe" (
-    "%~dp0.venv\Scripts\python.exe" "%~dp0core\manager.py" install
+    pushd "%~dp0"
+    ".venv\Scripts\python.exe" -m core.manager install
+    popd
 ) else (
     echo [ERROR] Virtual environment python was not found after bootstrap!
     pause

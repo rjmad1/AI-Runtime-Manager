@@ -181,18 +181,19 @@ if (Test-Path $venvDir) {
 }
 
 # --- 6. Install Python Dependencies in .venv ---
-Log-Info "Installing python dependencies (litellm, pyyaml, requests) inside .venv..."
+Log-Info "Installing python dependencies from requirements.txt inside .venv..."
+$requirementsFile = Join-Path (Split-Path $PSScriptRoot -Parent) "requirements.txt"
 $venvPip = Join-Path $venvDir "Scripts\uv.exe"
 if (-not (Test-Path $venvPip)) {
     $venvPip = $uvPath
 }
 try {
-    # Run uv pip install with pinned versions
+    # Install pinned versions from the single source of truth
     if ($venvPip -eq $uvPath) {
-        Invoke-NativeCommand { & $uvPath pip install --python "$venvDir\Scripts\python.exe" pyyaml==6.0.3 "litellm[proxy]==1.90.2" requests==2.34.2 }
+        Invoke-NativeCommand { & $uvPath pip install --python "$venvDir\Scripts\python.exe" -r $requirementsFile }
     } else {
         # If uv is copied in venv, use it
-        Invoke-NativeCommand { & $venvDir\Scripts\uv.exe pip install pyyaml==6.0.3 "litellm[proxy]==1.90.2" requests==2.34.2 }
+        Invoke-NativeCommand { & $venvDir\Scripts\uv.exe pip install -r $requirementsFile }
     }
     Log-Success "Python dependencies installed in .venv."
 } catch {

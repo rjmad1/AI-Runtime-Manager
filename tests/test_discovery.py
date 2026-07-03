@@ -1,15 +1,13 @@
 # tests/test_discovery.py
 # Unit tests for core/discovery.py — hardware discovery and model evaluation.
 
-import os
-import sys
-import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from core.discovery import (
-    get_hardware_recommendations,
+    _parse_nvidia_smi_gpus,
+    discover_hardware,
     evaluate_ollama_suitability,
+    get_hardware_recommendations,
 )
 
 
@@ -84,4 +82,31 @@ class TestEvaluateOllamaSuitability:
         assert len(result) == 1
         assert result[0]["required_ram_gb"] > 8
         assert result[0]["status"] == "failed"
+
+
+class TestNvidiaSmiParsing:
+    """Tests for nvidia-smi CSV output parsing (true VRAM, no uint32 overflow)."""
+
+    def test_parses_multi_gpu_output(self):
+        output = "NVIDIA GeForce RTX 4090, 24564\nNVIDIA GeForce RTX 3060, 12288\n"
+        gpus = _parse_nvidia_smi_gpus(output)
+        assert len(gpus) == 2
+        assert gpus[0]["name"] == "NVIDIA GeForce RTX 4090"
+        assert gpus[0]["vram_gb"] == 23.99  # 24564 MiB
+        assert gpus[1]["vram_gb"] == 12.0
+
+    def test_ignores_garbage_lines(self):
+        gpus = _parse_nvidia_smi_gpus("no comma here\nGPU X, not-a-number\n")
+        assert gpus == [{"name": "GPU X", "vram_gb": 0.0}]
+
+
+class TestDiscoverHardware:
+    """Cross-platform contract: discovery always returns the full spec shape."""
+
+    def test_returns_required_keys(self):
+        specs = discover_hardware()
+        for key in ("os", "cpu", "ram_gb", "gpus", "disk", "cuda"):
+            assert key in specs
+        assert specs["ram_gb"] > 0  # psutil path works on every platform
+        assert specs["disk"]["total_gb"] > 0
 

@@ -1,22 +1,27 @@
 # core/cli.py
 # CLI entry point and cross-cutting lifecycle commands for AIRM.
 
+import argparse
 import os
-import sys
 import shutil
 import subprocess
-import argparse
-from typing import NoReturn
+import sys
 
-from config import (
-    CORE_DIR, ROOT_DIR, GENERATED_DIR, LOGS_DIR,
-    SETTINGS_PATH, PROVIDERS_PATH, MODELS_PATH,
-    log, load_yaml, save_yaml, cmd_configure,
+from .backup import cmd_backup, cmd_restore
+from .config import (
+    GENERATED_DIR,
+    MODELS_PATH,
+    PROVIDERS_PATH,
+    ROOT_DIR,
+    SETTINGS_PATH,
+    cmd_configure,
+    ensure_runtime_dirs,
+    load_yaml,
+    log,
+    save_yaml,
 )
-from process import cmd_start, cmd_stop, cmd_status, scavenge_ports
-from diagnostics import cmd_diagnose
-from backup import cmd_backup, cmd_restore
-
+from .diagnostics import LiteLLMOfflineError, cmd_diagnose
+from .process import cmd_start, cmd_status, cmd_stop, cmd_watch, scavenge_ports
 
 LLAMA_SAMBANOVA = "llama-3.3-70b-sambanova"
 LLAMA_GROQ = "llama-3.3-70b-groq"
@@ -27,7 +32,7 @@ VENV_DIR = ".venv"
 def cmd_install() -> None:
     """Launch the guided visual setup assistant."""
     log("INFO", "Starting guided visual setup assistant...")
-    from config import get_windows_env, set_windows_env
+    from .config import get_windows_env, set_windows_env
 
     # Migrate old GOOGLE_API_KEY to GEMINI_API_KEY
     gemini_key = get_windows_env("GEMINI_API_KEY")
@@ -38,9 +43,8 @@ def cmd_install() -> None:
             set_windows_env("GEMINI_API_KEY", google_key)
 
     try:
-        server_script = os.path.join(CORE_DIR, "prompt_server.py")
-        log("INFO", f"Opening Web Control Center. Running server script: {server_script}")
-        subprocess.run([sys.executable, server_script])
+        log("INFO", "Opening Web Control Center...")
+        subprocess.run([sys.executable, "-m", "core.prompt_server"], cwd=ROOT_DIR)
     except Exception as e:
         log("ERROR", f"Failed to launch installation assistant: {e}")
 
@@ -51,7 +55,7 @@ def _repair_config() -> None:
         log("WARNING", "settings.yaml was corrupted or missing. Restoring default template...")
         default_settings = {
             "litellm": {
-                "host": "127.0.0.1", "port": 4000, "api_key": "sk-litellm-key",
+                "host": "127.0.0.1", "port": 4000, "api_key": "",
                 "set_verbose": False, "drop_params": True,
                 "routing_strategy": "latency-based-routing",
                 "num_retries": 3, "request_timeout": 30,
@@ -111,7 +115,7 @@ def _repair_cache_and_packages() -> None:
         if os.path.exists(venv_pip):
             try:
                 subprocess.run(
-                    [venv_pip, "install", "litellm[proxy]", "pyyaml", "requests"],
+                    [venv_pip, "install", "-r", os.path.join(ROOT_DIR, "requirements.txt")],
                     check=True, capture_output=True,
                 )
                 log("SUCCESS", "LiteLLM package reinstalled successfully.")
@@ -141,11 +145,7 @@ def cmd_upgrade() -> None:
     """Upgrade Python and npm packages."""
     log("INFO", "Running package upgrade suite...")
 
-    try:
-        import discovery
-    except ImportError:
-        sys.path.append(CORE_DIR)
-        import discovery
+    from . import discovery
 
     sys_details = discovery.run_all_discovery(SETTINGS_PATH)
     tools = sys_details["tools"]
@@ -155,7 +155,7 @@ def cmd_upgrade() -> None:
         log("INFO", "Upgrading LiteLLM and PyYAML inside .venv...")
         try:
             subprocess.run(
-                [venv_pip, "install", "--upgrade", "litellm[proxy]", "pyyaml", "requests"],
+                [venv_pip, "install", "--upgrade", "-r", os.path.join(ROOT_DIR, "requirements.txt")],
                 check=True,
             )
             log("SUCCESS", "LiteLLM upgraded in .venv.")
@@ -190,11 +190,7 @@ def _uninstall_packages() -> None:
 
     uninstall_npm = input("Do you want to uninstall openclaw globally from npm? (yes/no): ").strip().lower()
     if uninstall_npm == "yes":
-        try:
-            import discovery
-        except ImportError:
-            sys.path.append(CORE_DIR)
-            import discovery
+        from . import discovery
 
         sys_details = discovery.run_all_discovery(SETTINGS_PATH)
         tools = sys_details["tools"]
@@ -233,9 +229,10 @@ def cmd_uninstall() -> None:
 
 def main() -> None:
     """CLI entry point for the AIRM lifecycle manager."""
+    ensure_runtime_dirs()
     parser = argparse.ArgumentParser(description="OpenClaw Workstation Lifecycle Manager CLI")
     parser.add_argument("command", choices=[
-        "install", "configure", "start", "stop", "status",
+        "install", "configure", "start", "stop", "status", "watch",
         "diagnose", "repair", "backup", "restore", "upgrade", "uninstall",
     ], help="Command to run")
 
@@ -247,6 +244,7 @@ def main() -> None:
         "start": cmd_start,
         "stop": cmd_stop,
         "status": cmd_status,
+        "watch": cmd_watch,
         "diagnose": cmd_diagnose,
         "repair": cmd_repair,
         "backup": cmd_backup,
@@ -254,7 +252,11 @@ def main() -> None:
         "upgrade": cmd_upgrade,
         "uninstall": cmd_uninstall,
     }
-    commands[args.command]()
+    try:
+        commands[args.command]()
+    except LiteLLMOfflineError as e:
+        log("ERROR", str(e))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

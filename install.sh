@@ -59,10 +59,11 @@ else
     [ -f "$VENV_DIR/Scripts/python.exe" ] && VENV_PYTHON="$VENV_DIR/Scripts/python.exe"
 fi
 
+# Install pinned dependencies from the single source of truth
 if command -v uv &>/dev/null; then
-    uv pip install --python "$VENV_PYTHON" pyyaml==6.0.3 "litellm[proxy]==1.90.2" requests==2.34.2 psutil>=5.9.0
+    uv pip install --python "$VENV_PYTHON" -r "$DIR/requirements.txt"
 else
-    $VENV_PIP install pyyaml==6.0.3 "litellm[proxy]==1.90.2" requests==2.34.2 psutil>=5.9.0
+    "$VENV_PIP" install -r "$DIR/requirements.txt"
 fi
 
 # 6. Install OpenClaw
@@ -81,7 +82,7 @@ echo "[SUCCESS] Bootstrap phase completed successfully."
 # 7. Launch Manager
 echo "[INFO] Launching Web Guided Assistant..."
 if [ -f "$VENV_PYTHON" ]; then
-    "$VENV_PYTHON" "$DIR/core/manager.py" install
+    cd "$DIR" && "$VENV_PYTHON" -m core.manager install
 else
     echo "[ERROR] Virtual environment python was not found after bootstrap setup!"
     exit 1

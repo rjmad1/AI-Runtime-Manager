@@ -1,22 +1,29 @@
 # core/diagnostics.py
 # Endpoint benchmarking and health report generation for AIRM.
 
-import os
-import sys
-import json
 import html
+import json
+import os
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from datetime import datetime
 from typing import Any, Dict, List
 
-from config import (
-    CORE_DIR, GENERATED_DIR,
-    SETTINGS_PATH, PROVIDERS_PATH, MODELS_PATH,
-    log, load_yaml, get_windows_env,
+from .config import (
+    GENERATED_DIR,
+    MODELS_PATH,
+    PROVIDERS_PATH,
+    SETTINGS_PATH,
+    get_windows_env,
+    load_yaml,
+    log,
 )
-from process import get_pids_on_port
+from .process import get_pids_on_port
+
+
+class LiteLLMOfflineError(RuntimeError):
+    """Raised when diagnostics cannot run because the LiteLLM proxy is offline."""
 
 def _run_benchmarks(active_models: List[Dict[str, Any]], litellm_port: int, litellm_key: str, diagnostics: Dict[str, Any]) -> None:
     headers = {
@@ -83,11 +90,7 @@ def cmd_diagnose() -> Dict[str, Any]:
     """Run latency benchmarks against all configured model endpoints."""
     log("INFO", "Running endpoint connectivity and speed benchmarks...")
 
-    try:
-        import discovery
-    except ImportError:
-        sys.path.append(CORE_DIR)
-        import discovery
+    from . import discovery
 
     settings = load_yaml(SETTINGS_PATH)
     providers = load_yaml(PROVIDERS_PATH)
@@ -111,7 +114,9 @@ def cmd_diagnose() -> Dict[str, Any]:
     l_pids = get_pids_on_port(litellm_port)
     if not l_pids:
         log("ERROR", f"LiteLLM Proxy is OFFLINE on port {litellm_port}. Cannot execute diagnostics.")
-        sys.exit(1)
+        raise LiteLLMOfflineError(
+            f"LiteLLM Proxy is offline on port {litellm_port}. Start the services and retry."
+        )
 
     # Collect active models
     active_models: List[Dict[str, Any]] = []

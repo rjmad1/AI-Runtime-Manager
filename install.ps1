@@ -125,7 +125,7 @@ if (Test-Path ".\.venv\Scripts\python.exe") {
         # Launch prompt_server in the foreground as Web Control
         $prevErrAction = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        & ".\.venv\Scripts\python.exe" ".\core\manager.py" install
+        & ".\.venv\Scripts\python.exe" -m core.manager install
         if ($LASTEXITCODE -ne 0) { throw "Control assistant returned non-zero exit code $LASTEXITCODE" }
         $ErrorActionPreference = $prevErrAction
     } catch {

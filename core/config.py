@@ -1,15 +1,15 @@
 # core/config.py
 # Configuration management, constants, logging, and YAML utilities for AIRM.
 
-import os
-import sys
 import json
-import re
-import subprocess
-import shutil
-import secrets
-import time
+import os
 import platform
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
@@ -35,12 +35,25 @@ LITELLM_CONFIG_PATH: str = os.path.join(GENERATED_DIR, "config.yaml")
 OPENCLAW_CONFIG_PATH: str = os.path.join(GENERATED_DIR, "openclaw.json")
 SERVICES_STATE_PATH: str = os.path.join(GENERATED_DIR, "services.json")
 
-# Ensure folders exist
-os.makedirs(CONFIG_DIR, exist_ok=True)
-os.makedirs(GENERATED_DIR, exist_ok=True)
-os.makedirs(LOGS_DIR, exist_ok=True)
+# Deferred: directories are NOT created at import time.
+# Call ensure_runtime_dirs() from CLI entry points and server startup.
 
 LOG_FILE: str = os.path.join(LOGS_DIR, "installer.log")
+
+
+def ensure_runtime_dirs() -> None:
+    """Create CONFIG_DIR, GENERATED_DIR, and LOGS_DIR if they do not exist.
+
+    This must be called explicitly from CLI entry points and server startup
+    before any file I/O occurs.  Importing this module does NOT create
+    directories as a side effect.
+    """
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    os.makedirs(GENERATED_DIR, exist_ok=True)
+    os.makedirs(LOGS_DIR, exist_ok=True)
+
+
+_runtime_dirs_ensured: bool = False
 
 _LEVEL_COLORS: Dict[str, str] = {
     "INFO": "\033[36m",
@@ -49,17 +62,78 @@ _LEVEL_COLORS: Dict[str, str] = {
     "ERROR": "\033[31m",
 }
 
+# --- Security Constants ---
+# API key patterns to mask in logs
+_API_KEY_PATTERNS = [
+    r'(sk-[a-zA-Z0-9]{12})[a-zA-Z0-9_-]+',
+    r'(nvapi-[a-zA-Z0-9]{12})[a-zA-Z0-9_-]+',
+    r'(gsk_[a-zA-Z0-9]{12})[a-zA-Z0-9_-]+',
+    r'(rn_)[a-zA-Z0-9_-]+',
+    r'(hf_[a-zA-Z0-9]{12})[a-zA-Z0-9_-]+',
+]
+
+# Allowed directories for file operations
+_ALLOWED_DIRS = [CONFIG_DIR, GENERATED_DIR, LOGS_DIR, ROOT_DIR]
+
+
+def _is_safe_path(path: str, base_dir: str) -> bool:
+    """Check if path is within allowed directories to prevent path traversal."""
+    try:
+        base = os.path.abspath(base_dir)
+        target = os.path.abspath(path)
+        return target.startswith(base)
+    except (ValueError, OSError):
+        return False
+
+
+def _validate_provider_name(provider: str) -> bool:
+    """Validate provider name to prevent injection attacks."""
+    if not provider or len(provider) > 50:
+        return False
+    return bool(re.match(r'^[a-zA-Z0-9_-]+$', provider))
+
+
+def _validate_model_id(model_id: str) -> bool:
+    """Validate model ID to prevent injection attacks."""
+    if not model_id or len(model_id) > 100:
+        return False
+    return bool(re.match(r'^[a-zA-Z0-9_/-]+$', model_id))
+
+
+def _validate_env_var_name(name: str) -> bool:
+    """Validate environment variable name."""
+    if not name or len(name) > 100:
+        return False
+    return bool(re.match(r'^[A-Z][A-Z0-9_]*$', name))
+
+
+def _mask_secrets(message: str) -> str:
+    """Mask all API key patterns in log messages."""
+    clean_msg = message
+    for pattern in _API_KEY_PATTERNS:
+        clean_msg = re.sub(pattern, r'\1...', clean_msg)
+    return clean_msg
+
 
 def log(level: str, message: str) -> None:
     """Log a message with color, timestamp, and secret masking."""
+    global _runtime_dirs_ensured
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    clean_msg = re.sub(r'(sk-[a-zA-Z0-9]{12})[a-zA-Z0-9_-]+', r'\1...', message)
-    clean_msg = re.sub(r'(nvapi-[a-zA-Z0-9]{12})[a-zA-Z0-9_-]+', r'\1...', clean_msg)
+    clean_msg = _mask_secrets(message)
 
     color = _LEVEL_COLORS.get(level, "")
     reset = "\033[0m"
     print(f"{color}[{level}] {clean_msg}{reset}")
     sys.stdout.flush()
+
+    # Ensure LOGS_DIR exists on first log write so the caller does not need
+    # to call ensure_runtime_dirs() before the first log statement.
+    if not _runtime_dirs_ensured:
+        try:
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            _runtime_dirs_ensured = True
+        except Exception:
+            pass
 
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -73,7 +147,7 @@ def load_yaml(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
         return {}
     if not HAS_YAML:
-        log("ERROR", "PyYAML is not installed. Run Repair.bat to restore dependencies.")
+        log("ERROR", "PyYAML is not installed. Run 'Manage.bat repair' to restore dependencies.")
         return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -96,9 +170,15 @@ def save_yaml(data: Dict[str, Any], path: str) -> None:
 
 def get_windows_env(name: str) -> Optional[str]:
     """Retrieve an environment variable (cross-platform)."""
+    if not _validate_env_var_name(name):
+        log("ERROR", f"Invalid environment variable name: {name}")
+        return None
+
     if platform.system() == "Windows":
         try:
-            cmd = f"[System.Environment]::GetEnvironmentVariable('{name}', 'User')"
+            # Escape single quotes for PowerShell
+            safe_name = name.replace("'", "''")
+            cmd = f"[System.Environment]::GetEnvironmentVariable('{safe_name}', 'User')"
             res = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", cmd],
                 capture_output=True, text=True, check=True,
@@ -106,8 +186,10 @@ def get_windows_env(name: str) -> Optional[str]:
             val = res.stdout.strip()
             if val:
                 return val
-        except Exception:
-            pass
+        except subprocess.CalledProcessError as e:
+            log("WARNING", f"Failed to get env variable {name}: {e}")
+        except Exception as e:
+            log("WARNING", f"Unexpected error getting env variable {name}: {e}")
     else:
         env_file = os.path.expanduser("~/.airm_env")
         if os.path.exists(env_file):
@@ -122,15 +204,20 @@ def get_windows_env(name: str) -> Optional[str]:
                             if val.startswith("'") and val.endswith("'"):
                                 return val[1:-1]
                             return val
-            except Exception:
-                pass
+            except Exception as e:
+                log("WARNING", f"Failed to read env file: {e}")
     return os.environ.get(name)
 
 
 def set_windows_env(name: str, value: str) -> bool:
     """Set an environment variable (cross-platform)."""
+    if not _validate_env_var_name(name):
+        log("ERROR", f"Invalid environment variable name: {name}")
+        return False
+
     if platform.system() == "Windows":
         try:
+            # Escape single quotes for PowerShell to prevent injection
             safe_name = name.replace("'", "''")
             safe_value = value.replace("'", "''")
             cmd = (
@@ -143,8 +230,11 @@ def set_windows_env(name: str, value: str) -> bool:
             )
             os.environ[name] = value
             return True
-        except Exception as e:
+        except subprocess.CalledProcessError as e:
             log("ERROR", f"Failed to save env variable {name}: {e}")
+            return False
+        except Exception as e:
+            log("ERROR", f"Unexpected error saving env variable {name}: {e}")
             return False
     else:
         env_file = os.path.expanduser("~/.airm_env")
@@ -153,7 +243,7 @@ def set_windows_env(name: str, value: str) -> bool:
             if os.path.exists(env_file):
                 with open(env_file, "r", encoding="utf-8") as f:
                     lines = f.readlines()
-            
+
             new_lines = []
             found = False
             for line in lines:
@@ -164,10 +254,10 @@ def set_windows_env(name: str, value: str) -> bool:
                     new_lines.append(line)
             if not found:
                 new_lines.append(f'export {name}="{value}"\n')
-                
+
             with open(env_file, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
-            
+
             os.environ[name] = value
             return True
         except Exception as e:
@@ -302,6 +392,12 @@ def _sync_active_config(settings: Dict[str, Any], openclaw_cfg: Dict[str, Any], 
     config_dir = settings.get("openclaw", {}).get("config_dir")
     if not config_dir:
         config_dir = os.path.join(os.path.expanduser("~"), ".openclaw")
+
+    # Validate path to prevent traversal attacks
+    if not _is_safe_path(config_dir, os.path.expanduser("~")):
+        log("ERROR", f"Invalid config_dir path: {config_dir}")
+        config_dir = os.path.join(os.path.expanduser("~"), ".openclaw")
+
     os.makedirs(config_dir, exist_ok=True)
 
     active_claw_path = os.path.join(config_dir, "openclaw.json")
@@ -324,8 +420,15 @@ def _sync_active_config(settings: Dict[str, Any], openclaw_cfg: Dict[str, Any], 
         }
     else:
         auth = existing_data["gateway"].get("auth", {})
-        if auth.get("token") == "7d07bed5a8d8621d4dab6bec133d7297e58f915902437007":
-            log("WARNING", "Upgrading default static token to dynamic secure token...")
+        # Rotate any token that was not generated by secrets.token_hex(24).
+        # A valid token is exactly 48 lowercase hex characters (24 bytes × 2).
+        # Anything shorter, longer, or missing is treated as an insecure bootstrap
+        # state and replaced — this covers historic default tokens without
+        # embedding any known-bad literal value in source.
+        current_token = auth.get("token", "")
+        _HEX_RE = re.compile(r'^[0-9a-f]{48}$')
+        if not _HEX_RE.match(current_token):
+            log("WARNING", "Insecure or legacy auth token detected. Rotating to a new secure token...")
             existing_data["gateway"].setdefault("auth", {})["token"] = secrets.token_hex(24)
 
     existing_data.setdefault("models", {}).setdefault("providers", {})
@@ -355,28 +458,25 @@ def _sync_active_config(settings: Dict[str, Any], openclaw_cfg: Dict[str, Any], 
 
 def cmd_configure() -> None:
     """Compile LiteLLM and OpenClaw configuration blueprints from YAML sources."""
+    ensure_runtime_dirs()
     log("INFO", "Compiling configuration blueprints...")
 
     # Lazy import to keep module dependency unidirectional
-    try:
-        import discovery
-    except ImportError:
-        sys.path.append(CORE_DIR)
-        import discovery
+    from . import discovery
 
     settings = load_yaml(SETTINGS_PATH)
     providers = load_yaml(PROVIDERS_PATH)
     models_reg = load_yaml(MODELS_PATH)
 
     if not settings or not providers or not models_reg:
-        log("ERROR", "YAML settings files are missing or corrupted. Run 'Repair.bat' to restore them.")
+        log("ERROR", "YAML settings files are missing or corrupted. Run 'Manage.bat repair' to restore them.")
         raise RuntimeError("YAML settings files are missing or corrupted.")
 
-    # Rotate default LiteLLM API key on first configure
-    litellm_key = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
-    if litellm_key == "sk-litellm-key":
+    # Generate LiteLLM API key on first configure (empty string = not yet set)
+    litellm_key = settings.get("litellm", {}).get("api_key", "")
+    if not litellm_key:
         new_key = f"sk-airm-{secrets.token_hex(16)}"
-        log("INFO", "Generating unique LiteLLM API key (replacing insecure default)...")
+        log("INFO", "Generating unique LiteLLM API key...")
         settings.setdefault("litellm", {})["api_key"] = new_key
         save_yaml(settings, SETTINGS_PATH)
         litellm_key = new_key

@@ -1,13 +1,14 @@
 # core/discovery.py
 # System hardware, tooling, and LLM ecosystem discovery engine for AIRM
 
-import os
-import sys
 import json
+import os
+import platform
+import re
 import shutil
 import subprocess
-import re
-import platform
+import sys
+
 
 def run_powershell_cmd(cmd):
     """Run a PowerShell command and return the trimmed output or empty string."""
@@ -23,8 +24,57 @@ def run_powershell_cmd(cmd):
     except Exception:
         return ""
 
+def _cpu_name_posix():
+    """CPU model name on macOS/Linux."""
+    try:
+        if platform.system() == "Darwin":
+            res = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True, text=True,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        else:
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.lower().startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return platform.processor() or platform.machine() or "Unknown CPU"
+
+
+def _parse_nvidia_smi_gpus(output):
+    """Parse `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits`."""
+    gpus = []
+    for line in output.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 2:
+            try:
+                vram_gb = round(float(parts[1]) / 1024, 2)  # MiB -> GB
+            except ValueError:
+                vram_gb = 0.0
+            gpus.append({"name": parts[0], "vram_gb": vram_gb})
+    return gpus
+
+
+def _gpus_from_nvidia_smi():
+    """Query NVIDIA GPUs directly. Works on all platforms and, unlike WMI
+    AdapterRAM (a uint32 that overflows above 4GB), reports true VRAM."""
+    try:
+        res = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True,
+        )
+        if res.returncode == 0:
+            return _parse_nvidia_smi_gpus(res.stdout)
+    except Exception:
+        pass
+    return []
+
+
 def discover_hardware():
-    """Discover Windows hardware specs via PowerShell CIM/WMI commands."""
+    """Discover hardware specs (psutil + nvidia-smi everywhere; CIM/WMI on Windows, sysfs/sysctl on POSIX)."""
     specs = {
         "os": f"{platform.system()} {platform.release()}",
         "cpu": "Unknown CPU",
@@ -33,61 +83,63 @@ def discover_hardware():
         "disk": {"total_gb": 0.0, "free_gb": 0.0},
         "cuda": "Not Detected"
     }
-    
-    # 1. CPU Name
-    cpu_name = run_powershell_cmd("(Get-CimInstance Win32_Processor).Name")
-    if cpu_name:
-        specs["cpu"] = cpu_name
-        
-    # 2. RAM in GB
-    total_ram = run_powershell_cmd("(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory")
-    if total_ram.isdigit():
-        specs["ram_gb"] = round(int(total_ram) / (1024**3), 2)
-        
-    # 3. GPU Controllers and VRAM
-    gpu_json = run_powershell_cmd(
-        "Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM | ConvertTo-Json"
-    )
-    if gpu_json:
-        try:
-            data = json.loads(gpu_json)
-            if isinstance(data, dict):
-                data = [data]
-            for item in data:
-                name = item.get("Name", "Unknown Controller")
-                vram_bytes = item.get("AdapterRAM", 0) or 0
-                # VRAM might be reported as a negative integer or large int due to overflow in older systems
-                if isinstance(vram_bytes, int) and vram_bytes < 0:
-                    vram_bytes = 4 * 1024**3 # Default fallback to 4GB if negative overflow
-                vram_gb = round(vram_bytes / (1024**3), 2)
-                specs["gpus"].append({
-                    "name": name,
-                    "vram_gb": vram_gb
-                })
-        except Exception:
-            # Fallback text query
-            names = run_powershell_cmd("(Get-CimInstance Win32_VideoController).Name")
-            if names:
-                for name in names.splitlines():
-                    specs["gpus"].append({"name": name.strip(), "vram_gb": 0.0})
 
-    # 4. Disk space (C: drive)
-    disk_json = run_powershell_cmd(
-        "Get-CimInstance Win32_LogicalDisk -Filter \"DeviceID='C:'\" | Select-Object Size, FreeSpace | ConvertTo-Json"
-    )
-    if disk_json:
-        try:
-            data = json.loads(disk_json)
-            size = data.get("Size", 0) or 0
-            free = data.get("FreeSpace", 0) or 0
-            specs["disk"] = {
-                "total_gb": round(size / (1024**3), 2),
-                "free_gb": round(free / (1024**3), 2)
-            }
-        except Exception:
-            pass
+    # 1. RAM and disk via psutil (cross-platform, already a core dependency)
+    try:
+        import psutil
+        specs["ram_gb"] = round(psutil.virtual_memory().total / (1024**3), 2)
+        du = psutil.disk_usage("C:\\" if platform.system() == "Windows" else "/")
+        specs["disk"] = {
+            "total_gb": round(du.total / (1024**3), 2),
+            "free_gb": round(du.free / (1024**3), 2),
+        }
+    except Exception:
+        pass
 
-    # 5. CUDA Check
+    # 2. CPU name
+    if platform.system() == "Windows":
+        cpu_name = run_powershell_cmd("(Get-CimInstance Win32_Processor).Name")
+        if cpu_name:
+            specs["cpu"] = cpu_name
+    else:
+        specs["cpu"] = _cpu_name_posix()
+
+    # 3. GPUs: nvidia-smi first (accurate VRAM), then platform-specific fill-in
+    specs["gpus"] = _gpus_from_nvidia_smi()
+    seen_names = {g["name"] for g in specs["gpus"]}
+    if platform.system() == "Windows":
+        # CIM adds non-NVIDIA controllers (Intel/AMD iGPUs etc.)
+        gpu_json = run_powershell_cmd(
+            "Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM | ConvertTo-Json"
+        )
+        if gpu_json:
+            try:
+                data = json.loads(gpu_json)
+                if isinstance(data, dict):
+                    data = [data]
+                for item in data:
+                    name = item.get("Name", "Unknown Controller")
+                    if name in seen_names:
+                        continue
+                    vram_bytes = item.get("AdapterRAM", 0) or 0
+                    # AdapterRAM is uint32: negative/overflowed values are unreliable
+                    if isinstance(vram_bytes, int) and vram_bytes < 0:
+                        vram_bytes = 0
+                    specs["gpus"].append({
+                        "name": name,
+                        "vram_gb": round(vram_bytes / (1024**3), 2),
+                    })
+            except Exception:
+                names = run_powershell_cmd("(Get-CimInstance Win32_VideoController).Name")
+                if names:
+                    for name in names.splitlines():
+                        if name.strip() not in seen_names:
+                            specs["gpus"].append({"name": name.strip(), "vram_gb": 0.0})
+    elif not specs["gpus"] and platform.system() == "Darwin" and platform.machine() == "arm64":
+        # Apple Silicon: unified memory — the GPU shares system RAM
+        specs["gpus"].append({"name": "Apple Silicon (Metal)", "vram_gb": specs["ram_gb"]})
+
+    # 4. CUDA Check
     # Try nvcc compiler version
     try:
         res = subprocess.run(["nvcc", "--version"], capture_output=True, text=True)
@@ -97,7 +149,7 @@ def discover_hardware():
                 specs["cuda"] = f"CUDA v{m.group(1)} (nvcc)"
     except Exception:
         pass
-        
+
     if specs["cuda"] == "Not Detected":
         # Check nvidia-smi
         try:
@@ -108,19 +160,19 @@ def discover_hardware():
                     specs["cuda"] = f"CUDA v{m.group(1)} (nvidia-smi)"
         except Exception:
             pass
-            
+
     if specs["cuda"] == "Not Detected":
         cuda_path = os.environ.get("CUDA_PATH")
         if cuda_path:
             m = re.search(r"v(\d+\.\d+)", cuda_path)
             specs["cuda"] = f"CUDA v{m.group(1)} (env)" if m else "CUDA Present (env)"
-            
+
     return specs
 
 def get_hardware_recommendations(specs):
     """Translate hardware specifications into dynamic system capabilities and suggestions."""
     ram = specs["ram_gb"]
-    
+
     # Calculate total VRAM from any NVIDIA controller
     nvidia_vram = 0.0
     has_nvidia = False
@@ -158,7 +210,7 @@ def discover_tools():
     """Detect local paths of required installation tools."""
     tools = {}
     user_home = os.path.expanduser("~")
-    
+
     for tool in ["git", "python", "node", "npm", "uv", "ollama"]:
         path = shutil.which(tool)
         if path:
@@ -183,7 +235,7 @@ def discover_tools():
                     if os.path.exists(p):
                         tools[tool] = p
                         break
-                        
+
     return tools
 
 def load_litellm_catalog():
@@ -204,7 +256,7 @@ def load_litellm_catalog():
                 db = {}
     except Exception:
         db = {}
-        
+
     # Group by standard provider keys
     # Map litellm providers to user-facing provider tags
     provider_map = {
@@ -225,7 +277,7 @@ def load_litellm_catalog():
         "openai": "openai",
         "anthropic": "anthropic"
     }
-    
+
     for model_key, spec in db.items():
         # Get provider
         litellm_provider = spec.get("litellm_provider", "").lower()
@@ -234,25 +286,25 @@ def load_litellm_catalog():
             if "/" in model_key:
                 prefix = model_key.split("/")[0].lower()
                 litellm_provider = prefix
-                
+
         provider = provider_map.get(litellm_provider)
         if not provider:
             continue
-            
+
         if provider not in catalog:
             catalog[provider] = []
-            
+
         # Clean up model entry
         # Context window: check max_input_tokens or max_tokens
         context = spec.get("max_input_tokens") or spec.get("max_tokens") or 4096
         max_output = spec.get("max_output_tokens") or spec.get("max_tokens") or 4096
-        
+
         # Human readable clean name
         name = model_key
         if "/" in name:
             name = name.split("/")[-1]
         name = name.replace("-", " ").replace("_", " ").title()
-        
+
         # Capability flags
         capabilities = []
         if spec.get("supports_vision"):
@@ -263,11 +315,11 @@ def load_litellm_catalog():
             capabilities.append("Reasoning")
         if spec.get("supports_response_schema"):
             capabilities.append("Structured Output")
-            
+
         # Token cost
         input_cost = spec.get("input_cost_per_token", 0.0) * 1e6 # cost per 1M tokens
         output_cost = spec.get("output_cost_per_token", 0.0) * 1e6
-        
+
         catalog[provider].append({
             "id": model_key,
             "name": name,
@@ -278,7 +330,7 @@ def load_litellm_catalog():
             "cost_per_1m_input_usd": round(input_cost, 4),
             "cost_per_1m_output_usd": round(output_cost, 4)
         })
-        
+
     return catalog
 
 def get_ollama_models(api_base):
@@ -296,21 +348,21 @@ def get_ollama_models(api_base):
 def evaluate_ollama_suitability(ollama_models, specs):
     """Evaluate downloaded Ollama models against local hardware specifications."""
     evaluated = []
-    
+
     # Calculate total memory budget (NVIDIA VRAM is premium, RAM is backup)
     vram_gb = 0.0
     for gpu in specs["gpus"]:
         name = gpu["name"].lower()
         if "nvidia" in name or "rtx" in name or "gtx" in name or "geforce" in name:
             vram_gb = max(vram_gb, gpu["vram_gb"])
-            
+
     ram_gb = specs["ram_gb"]
-    
+
     for m in ollama_models:
         name = m.get("name", "unknown")
         details = m.get("details", {})
         parameter_size = details.get("parameter_size", "")
-        
+
         # Infer parameter count (e.g. "8.0B" or "70B")
         param_gb = 0.0
         m_size = re.search(r"(\d+(\.\d+)?)B", parameter_size, re.IGNORECASE)
@@ -321,10 +373,10 @@ def evaluate_ollama_suitability(ollama_models, specs):
             tag_size = re.search(r"(\d+(\.\d+)?)b", name, re.IGNORECASE)
             if tag_size:
                 param_gb = float(tag_size.group(1))
-                
+
         # Estimate RAM needed in GB (highly quantized 4-bit models typically need ~0.7GB RAM per 1B parameters + 1-2GB overhead)
         required_ram = (param_gb * 0.7) + 1.5 if param_gb > 0 else 4.0
-        
+
         # Decide suitability
         if param_gb == 0:
             suitability = "Unknown Requirements"
@@ -338,7 +390,7 @@ def evaluate_ollama_suitability(ollama_models, specs):
             if vram_gb > 0:
                 suitability = "Partial Acceleration"
                 status = "partial"
-                comment = f"Exceeds dedicated VRAM but fits in system RAM. Will run at moderate speeds using CPU/GPU offloading."
+                comment = "Exceeds dedicated VRAM but fits in system RAM. Will run at moderate speeds using CPU/GPU offloading."
             else:
                 suitability = "Runs slowly on CPU"
                 status = "cpu"
@@ -347,7 +399,7 @@ def evaluate_ollama_suitability(ollama_models, specs):
             suitability = "Insufficient Memory"
             status = "failed"
             comment = f"Requires {round(required_ram, 1)}GB memory, which exceeds system resources."
-            
+
         evaluated.append({
             "name": name,
             "parameter_size": parameter_size or f"{param_gb}B" if param_gb > 0 else "Unknown",
@@ -357,7 +409,7 @@ def evaluate_ollama_suitability(ollama_models, specs):
             "status": status,
             "comment": comment
         })
-        
+
     return evaluated
 
 def run_all_discovery(settings_path):
@@ -370,22 +422,22 @@ def run_all_discovery(settings_path):
                 settings = yaml.safe_load(f) or {}
         except Exception:
             pass
-            
+
     api_base = "http://127.0.0.1:11434"
     if settings:
         api_base = settings.get("ollama", {}).get("api_base", api_base)
-        
+
     specs = discover_hardware()
     recs = get_hardware_recommendations(specs)
     tools = discover_tools()
-    
+
     # Query Ollama
     ollama_models = get_ollama_models(api_base)
     evaluated_ollama = evaluate_ollama_suitability(ollama_models, specs)
-    
+
     # Load LiteLLM metadata
     catalog = load_litellm_catalog()
-    
+
     return {
         "specs": specs,
         "recommendations": recs,

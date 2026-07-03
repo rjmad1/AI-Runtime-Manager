@@ -10,6 +10,7 @@ if [ -z "$1" ]; then
     echo "  ./manage.sh start     - Start LiteLLM + OpenClaw servers"
     echo "  ./manage.sh stop      - Force stop all running servers"
     echo "  ./manage.sh status    - Check running components status"
+    echo "  ./manage.sh watch     - Self-healing watchdog: auto-restart crashed daemons"
     echo "  ./manage.sh configure - Regenerate configuration files"
     echo "  ./manage.sh diagnose  - Run latency connectivity benchmarks"
     echo "  ./manage.sh repair    - Run self-healing and check prerequisites"
@@ -33,4 +34,4 @@ else
     PYTHON_EXE="$DIR/.venv/bin/python"
 fi
 
-"$PYTHON_EXE" "$DIR/core/manager.py" "$@"
+cd "$DIR" && "$PYTHON_EXE" -m core.manager "$@"

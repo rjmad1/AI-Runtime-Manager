@@ -8,30 +8,42 @@
 #   - validation.py : Provider API key validation
 #   - cli.py        : CLI argparse entry point, repair/upgrade/uninstall
 
-import os
-import sys
-
-# Ensure core/ is on the import path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 # Re-export everything that prompt_server.py and .bat scripts depend on
-from config import (  # noqa: F401
-    CORE_DIR, ROOT_DIR, CONFIG_DIR, GENERATED_DIR, LOGS_DIR,
-    SETTINGS_PATH, PROVIDERS_PATH, MODELS_PATH,
-    LITELLM_CONFIG_PATH, OPENCLAW_CONFIG_PATH, SERVICES_STATE_PATH,
+from .backup import cmd_backup, cmd_restore  # noqa: F401
+from .cli import cmd_install, cmd_repair, cmd_uninstall, cmd_upgrade, main  # noqa: F401
+from .config import (  # noqa: F401
+    CONFIG_DIR,
+    CORE_DIR,
+    GENERATED_DIR,
+    LITELLM_CONFIG_PATH,
     LOG_FILE,
-    log, load_yaml, save_yaml,
-    get_windows_env, set_windows_env,
+    LOGS_DIR,
+    MODELS_PATH,
+    OPENCLAW_CONFIG_PATH,
+    PROVIDERS_PATH,
+    ROOT_DIR,
+    SERVICES_STATE_PATH,
+    SETTINGS_PATH,
     cmd_configure,
+    ensure_runtime_dirs,
+    get_windows_env,
+    load_yaml,
+    log,
+    save_yaml,
+    set_windows_env,
 )
-from process import (  # noqa: F401
-    load_services_state, save_services_state,
-    get_pids_on_port, is_pid_running, kill_process_tree, scavenge_ports,
-    cmd_start, cmd_stop, cmd_status,
+from .diagnostics import cmd_diagnose  # noqa: F401
+from .process import (  # noqa: F401
+    cmd_start,
+    cmd_status,
+    cmd_stop,
+    get_pids_on_port,
+    is_pid_running,
+    kill_process_tree,
+    load_services_state,
+    save_services_state,
+    scavenge_ports,
 )
-from diagnostics import cmd_diagnose  # noqa: F401
-from backup import cmd_backup, cmd_restore  # noqa: F401
-from cli import cmd_install, cmd_repair, cmd_upgrade, cmd_uninstall, main  # noqa: F401
 
 if __name__ == "__main__":
     main()
