@@ -4,9 +4,23 @@ Deploy the entire AI Runtime Manager (AIRM) workstation, system prerequisites, a
 
 ---
 
+## ✅ Recommended: Verified Installation
+
+Download the bootstrap script first so you can review what will run on your machine, then execute it:
+
+```powershell
+iwr https://raw.githubusercontent.com/rjmad1/AI-Runtime-Manager/main/install.ps1 -OutFile install.ps1
+# Inspect the script (e.g. notepad install.ps1), then:
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+You can also clone the repository with `git clone https://github.com/rjmad1/AI-Runtime-Manager.git` and run `Install.bat` from the checkout — every script is inspectable before execution.
+
+---
+
 ## ⚡ Quick-Start: Single-Command Installation
 
-To deploy the entire stack automatically on any clean Windows machine, open a standard PowerShell terminal and paste the following command:
+If you accept running a remote script without prior inspection, deploy the entire stack automatically by pasting the following into a standard PowerShell terminal:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/rjmad1/AI-Runtime-Manager/main/install.ps1 | iex"

@@ -10,11 +10,11 @@ If services hang or behave unexpectedly, the fastest way to resolve configuratio
 
 **In the File Explorer:**
 *   Navigate to your installation folder (e.g. `C:\Users\<username>\AI-Runtime-Manager`).
-*   Double-click **`Repair.bat`**.
+*   Run **`Manage.bat repair`**.
 
 **From PowerShell:**
 ```powershell
-.\Repair.bat
+.\Manage.bat repair
 ```
 
 ### What Self-Repair Does:
@@ -26,12 +26,26 @@ If services hang or behave unexpectedly, the fastest way to resolve configuratio
 
 ---
 
+## 🐕 Continuous Self-Healing: The Watchdog
+
+For unattended operation, run the watchdog instead of waiting for something to break:
+
+```powershell
+.\Manage.bat watch
+```
+
+The watchdog polls both daemons every 15 seconds. If either the LiteLLM Proxy or the OpenClaw Gateway dies, it restarts the full stack automatically (stop → port scavenge → reconfigure → start). Repeated restart failures back off exponentially (capped at 5 minutes) so a hard-broken installation is never restart-hammered. Press `Ctrl+C` to stop supervision; on Linux/macOS use `./manage.sh watch`.
+
+To keep the watchdog itself alive across reboots, register it with your platform's scheduler (a Windows Task Scheduler "At log on" task, or a systemd/launchd user service running `manage.sh watch`).
+
+---
+
 ## 🔍 Frequent Breakdowns & Solutions
 
 ### 1. Port Collisions (Port 4000 or 18789 Occupied)
 *   **Symptom**: LiteLLM or OpenClaw fails to launch; console logs display `OSError: [Errno 98] Address already in use` or port binding failures.
 *   **Cause**: A previous instance of the services did not shut down cleanly, or another application is listening on port 4000 or 18789.
-*   **Solution**: Double-click **`Repair.bat`** or run **`Manage.bat stop`**. This calls AIRM's port scavenger, which runs `netstat -ano`, identifies the exact process IDs holding the ports, and kills their process trees.
+*   **Solution**: Run **`Manage.bat repair`** or **`Manage.bat stop`**. This calls AIRM's port scavenger, which runs `netstat -ano`, identifies the exact process IDs holding the ports, and kills their process trees.
 
 ### 2. "LiteLLM Proxy is Offline" / "Cannot Execute Diagnostics"
 *   **Symptom**: Starting the gateway fails, or running diagnostics logs `[ERROR] LiteLLM Proxy is OFFLINE`.

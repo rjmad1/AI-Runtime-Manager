@@ -2,6 +2,25 @@
 
 The AI Runtime Manager (AIRM) exposes a loopback-only control plane HTTP server on `http://127.0.0.1:8500`. This document outlines the REST API endpoints available for visual dashboards, scripting, or external workstation orchestration.
 
+## 🔐 Authentication
+
+All state-changing `POST` endpoints require a session token, generated fresh on every server start and printed to the terminal (the dashboard receives it automatically via the launch URL). Requests without it are rejected with `401 Unauthorized` — this protects the local control plane against cross-site request forgery from other pages in your browser.
+
+Pass the token as a Bearer header when scripting:
+
+```bash
+# Without a token → 401
+curl -i -X POST http://127.0.0.1:8500/api/control \
+  -H 'Content-Type: application/json' -d '{"action":"stop"}'
+
+# With the token printed at server start → 200
+curl -i -X POST http://127.0.0.1:8500/api/control \
+  -H "Authorization: Bearer <token>" \
+  -H 'Content-Type: application/json' -d '{"action":"stop"}'
+```
+
+`GET` endpoints are read-only and unauthenticated.
+
 ---
 
 ## 📡 GET Endpoints

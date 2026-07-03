@@ -18,6 +18,15 @@ Welcome! We appreciate your interest in contributing to the AI Runtime Manager (
 3.  **Bootstrap dependency environment:**
     Double-click `Install.bat` or run `install.ps1` in PowerShell. This configures the local `.venv` environment and installs pinned dependencies.
 
+4.  **Developer install (recommended for contributors):**
+    Set up a virtual environment and install the project in editable mode — no `PYTHONPATH` tweaks needed:
+    ```cmd
+    python -m venv .venv
+    .venv\Scripts\pip.exe install -r requirements.txt
+    .venv\Scripts\pip.exe install -e .
+    ```
+    The CLI is then available as `airm` (or `python -m core.manager`).
+
 ---
 
 ## 📐 Coding Standards
@@ -28,7 +37,7 @@ Welcome! We appreciate your interest in contributing to the AI Runtime Manager (
 *   **No Frameworks:** The core HTTP server runs on standard library `http.server`. Avoid introducing external frameworks (such as Flask, FastAPI) to keep dependencies light and secure.
 
 ### Web Dashboard (HTML/CSS/JS)
-*   **Separation of concerns:** Never embed UI styles or layout scripts directly inside Python source code. All layout must be written inside [core/templates/dashboard.html](file:///c:/Users/rajaj/Projects/OpenClaw%20InstallationEasyMethodLiteLLM/Installer%20Mode/core/templates/dashboard.html).
+*   **Separation of concerns:** Never embed UI styles or layout scripts directly inside Python source code. All layout must be written inside [core/templates/dashboard.html](core/templates/dashboard.html).
 *   **Styling:** Use Vanilla CSS with design variables.
 
 ---
