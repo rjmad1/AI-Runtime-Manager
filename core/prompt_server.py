@@ -212,6 +212,23 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"success": True})
 
     def _handle_post_install(self) -> None:
+        # Pre-flight check: ensure at least one API key is present OR ollama has models
+        providers = manager.load_yaml(manager.PROVIDERS_PATH)
+        has_keys = False
+        for p_name, p_info in providers.items():
+            if isinstance(p_info, dict) and p_info.get("enabled", False):
+                env_var = p_info.get("env_var", "")
+                if env_var and manager.get_windows_env(env_var):
+                    has_keys = True
+                    break
+
+        discovery_data = _get_cached_discovery()
+        ollama_models = discovery_data.get("ollama", {}).get("models", [])
+
+        if not has_keys and not ollama_models:
+            self._send_json({"success": False, "message": "Missing API credentials. Please configure at least one provider API key or install Ollama models before continuing."})
+            return
+
         with _install_lock:
             if INSTALL_STATE["status"] == "installing":
                 self._send_json({"success": False, "message": "Installation already in progress."})

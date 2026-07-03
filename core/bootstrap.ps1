@@ -38,6 +38,16 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $installModeDir = Split-Path -Parent $scriptDir
 $venvDir = Join-Path $installModeDir ".venv"
 
+# --- Pre-flight Check: Write Permissions ---
+try {
+    $testFile = Join-Path $installModeDir ".write_test"
+    [IO.File]::WriteAllText($testFile, "test")
+    Remove-Item $testFile -Force -ErrorAction SilentlyContinue
+} catch {
+    Log-Error "Cannot write to installation directory ($installModeDir). Please check folder permissions or run as Administrator."
+    Exit 1
+}
+
 # --- 1. Detect & Install Git ---
 $gitPath = Get-Command git -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Definition
 if (-not $gitPath -and (Test-Path "C:\Program Files\Git\cmd\git.exe")) {

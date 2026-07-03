@@ -106,7 +106,16 @@ try {
         throw "Bootstrapper exited with code $($proc.ExitCode)"
     }
 } catch {
-    Write-ErrorLog "Bootstrapper failed. Check .\logs\installer.log for details."
+    Write-ErrorLog "Bootstrapper failed. Checking logs..."
+    if (Test-Path ".\logs\installer.log") {
+        $logContent = Get-Content ".\logs\installer.log" -Tail 15 -ErrorAction SilentlyContinue
+        Write-Host ""
+        Write-Host "--- Last 15 lines of installer.log ---" -ForegroundColor Yellow
+        $logContent | ForEach-Object { Write-Host $_ }
+        Write-Host "--------------------------------------" -ForegroundColor Yellow
+    } else {
+        Write-ErrorLog "Log file .\logs\installer.log not found."
+    }
     Exit 1
 }
 
