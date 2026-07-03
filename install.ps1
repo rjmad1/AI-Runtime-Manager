@@ -11,6 +11,7 @@ function Write-WarnLog ($msg) { Write-Host "[WARNING] $msg" -ForegroundColor Yel
 function Write-ErrorLog ($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red }
 
 Clear-Host
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Write-InfoLog "=========================================================="
 Write-InfoLog "    OpenClaw Workstation AI Runtime Manager (AIRM)"
 Write-InfoLog "=========================================================="
@@ -100,7 +101,10 @@ New-Item -ItemType Directory -Force -Path ".\logs" | Out-Null
 Write-InfoLog "Invoking low-level bootstrapper silently (logging to .\logs\installer.log)..."
 try {
     # Run bootstrap silently and redirect logs
-    powershell -ExecutionPolicy Bypass -File ".\core\bootstrap.ps1" *>> ".\logs\installer.log"
+    $proc = Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `".\core\bootstrap.ps1`"" -RedirectStandardOutput ".\logs\installer.log" -RedirectStandardError ".\logs\installer.log" -PassThru -Wait -NoNewWindow
+    if ($proc.ExitCode -ne 0) {
+        throw "Bootstrapper exited with code $($proc.ExitCode)"
+    }
 } catch {
     Write-ErrorLog "Bootstrapper failed. Check .\logs\installer.log for details."
     Exit 1
@@ -110,7 +114,11 @@ Write-InfoLog "Launching Web Guided Assistant..."
 if (Test-Path ".\.venv\Scripts\python.exe") {
     try {
         # Launch prompt_server in the foreground as Web Control
+        $prevErrAction = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         & ".\.venv\Scripts\python.exe" ".\core\manager.py" install
+        if ($LASTEXITCODE -ne 0) { throw "Control assistant returned non-zero exit code $LASTEXITCODE" }
+        $ErrorActionPreference = $prevErrAction
     } catch {
         Write-ErrorLog "Control assistant exited with error: $_"
         Exit 1

@@ -2,6 +2,20 @@
 # Low-level bootstrap to verify and install system dependencies, then set up Python virtual environment.
 
 $ErrorActionPreference = "Stop"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Helper to run native commands without stderr causing terminating exceptions
+function Invoke-NativeCommand {
+    param ([scriptblock]$Command)
+    $prevErrAction = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Command
+        if ($LASTEXITCODE -ne 0) { throw "Command exited with code $LASTEXITCODE" }
+    } finally {
+        $ErrorActionPreference = $prevErrAction
+    }
+}
 
 # Helper for colorful logging
 function Log-Info ($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
@@ -113,7 +127,7 @@ if ($uvPath) {
 } else {
     Log-Warn "uv not detected. Attempting to install uv using pip..."
     try {
-        & $pythonPath -m pip install uv --user
+        Invoke-NativeCommand { & $pythonPath -m pip install uv --user }
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
         $uvPath = Get-Command uv -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Definition
         if (-not $uvPath) {
@@ -148,7 +162,7 @@ if (Test-Path $venvDir) {
     Log-Info "Creating local virtual environment in $venvDir using uv..."
     try {
         Set-Location $installModeDir
-        & $uvPath venv .venv
+        Invoke-NativeCommand { & $uvPath venv .venv }
         Log-Success "Virtual environment created."
     } catch {
         Log-Error "Failed to create virtual environment."
@@ -165,10 +179,10 @@ if (-not (Test-Path $venvPip)) {
 try {
     # Run uv pip install with pinned versions
     if ($venvPip -eq $uvPath) {
-        & $uvPath pip install --python "$venvDir\Scripts\python.exe" pyyaml==6.0.3 "litellm[proxy]==1.90.2" requests==2.34.2
+        Invoke-NativeCommand { & $uvPath pip install --python "$venvDir\Scripts\python.exe" pyyaml==6.0.3 "litellm[proxy]==1.90.2" requests==2.34.2 }
     } else {
         # If uv is copied in venv, use it
-        & $venvDir\Scripts\uv.exe pip install pyyaml==6.0.3 "litellm[proxy]==1.90.2" requests==2.34.2
+        Invoke-NativeCommand { & $venvDir\Scripts\uv.exe pip install pyyaml==6.0.3 "litellm[proxy]==1.90.2" requests==2.34.2 }
     }
     Log-Success "Python dependencies installed in .venv."
 } catch {
@@ -192,7 +206,7 @@ if (Test-Path $localClawPath) {
     $globalInstallSuccess = $false
     try {
         # Try global install first
-        Start-Process npm -ArgumentList "install -g openclaw" -NoNewWindow -Wait -ErrorAction Stop
+        Start-Process cmd.exe -ArgumentList "/c npm install -g openclaw" -NoNewWindow -Wait -ErrorAction Stop
         # Check global path
         $globalClawPath = Get-Command openclaw -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Definition
         if (-not $globalClawPath -and (Test-Path "$env:AppData\npm\openclaw.ps1")) {
@@ -210,7 +224,7 @@ if (Test-Path $localClawPath) {
         Log-Warn "Attempting local installation inside project folder to bypass permissions..."
         try {
             Set-Location $installModeDir
-            Start-Process npm -ArgumentList "install openclaw" -NoNewWindow -Wait -ErrorAction Stop
+            Start-Process cmd.exe -ArgumentList "/c npm install openclaw" -NoNewWindow -Wait -ErrorAction Stop
             if (Test-Path $localClawPath) {
                 Log-Success "OpenClaw installed locally successfully."
             } else {
