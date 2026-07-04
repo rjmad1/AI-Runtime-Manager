@@ -158,22 +158,25 @@ def load_yaml(path: str) -> Dict[str, Any]:
 
 
 def save_yaml(data: Dict[str, Any], path: str) -> None:
-    """Save data to a YAML file. Requires PyYAML."""
+    """Save data to a YAML file. Requires PyYAML.
+
+    Versioned configuration files (settings/providers/models) are snapshotted
+    into the config history before being overwritten (core/confighistory)."""
     if not HAS_YAML:
         log("ERROR", "PyYAML is not installed. Cannot write configuration.")
         return
+    from . import confighistory  # lazy: keep module dependency unidirectional
+    content = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+    confighistory.before_save(path, new_content=content)
     with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+        f.write(content)
+    confighistory.after_save(path)
 
 
 # --- Windows persistent user variable helpers ---
 
-def get_windows_env(name: str) -> Optional[str]:
-    """Retrieve an environment variable (cross-platform)."""
-    if not _validate_env_var_name(name):
-        log("ERROR", f"Invalid environment variable name: {name}")
-        return None
-
+def _legacy_env_get(name: str) -> Optional[str]:
+    """Legacy plaintext lookup: Windows user registry / ~/.airm_env."""
     if platform.system() == "Windows":
         try:
             # Escape single quotes for PowerShell
@@ -206,15 +209,35 @@ def get_windows_env(name: str) -> Optional[str]:
                             return val
             except Exception as e:
                 log("WARNING", f"Failed to read env file: {e}")
+    return None
+
+
+def get_windows_env(name: str) -> Optional[str]:
+    """Resolve a secret/environment value.
+
+    Resolution order: OS credential store (via core/secretstore) → legacy
+    plaintext locations (registry / ~/.airm_env, transparently promoted into
+    the credential store when found) → process environment."""
+    if not _validate_env_var_name(name):
+        log("ERROR", f"Invalid environment variable name: {name}")
+        return None
+
+    from . import secretstore  # lazy: keep module dependency unidirectional
+    value = secretstore.get_secret(name)
+    if value:
+        return value
+
+    legacy = _legacy_env_get(name)
+    if legacy:
+        secretstore.migrate_legacy(name, legacy)
+        return legacy
     return os.environ.get(name)
 
 
-def set_windows_env(name: str, value: str) -> bool:
-    """Set an environment variable (cross-platform)."""
-    if not _validate_env_var_name(name):
-        log("ERROR", f"Invalid environment variable name: {name}")
-        return False
+def _legacy_env_set(name: str, value: str) -> bool:
+    """Legacy plaintext write: Windows user registry / ~/.airm_env.
 
+    Only used as a fallback when no OS credential store is available."""
     if platform.system() == "Windows":
         try:
             # Escape single quotes for PowerShell to prevent injection
@@ -263,6 +286,26 @@ def set_windows_env(name: str, value: str) -> bool:
         except Exception as e:
             log("ERROR", f"Failed to save env variable {name}: {e}")
             return False
+
+
+def set_windows_env(name: str, value: str) -> bool:
+    """Store a secret/environment value.
+
+    Writes to the OS credential store (encrypted at rest); falls back to the
+    legacy plaintext locations only when no store is available. The process
+    environment is always updated so spawned daemons inherit the value."""
+    if not _validate_env_var_name(name):
+        log("ERROR", f"Invalid environment variable name: {name}")
+        return False
+
+    from . import secretstore  # lazy: keep module dependency unidirectional
+    if secretstore.set_secret(name, value):
+        os.environ[name] = value
+        return True
+
+    log("WARNING", f"No OS credential store available. Storing {name} in the legacy "
+                   "plaintext environment location.")
+    return _legacy_env_set(name, value)
 
 
 # --- Configuration Compilation Helpers ---

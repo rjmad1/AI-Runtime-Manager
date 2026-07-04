@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Optional
 
 from . import (
+    auth,
     discovery,
     manager,  # thin re-export layer
 )
@@ -65,6 +66,23 @@ def _get_cached_discovery(force: bool = False) -> Dict[str, Any]:
     _discovery_cache = discovery.run_all_discovery(manager.SETTINGS_PATH)
     _discovery_cache_time = now
     return _discovery_cache
+
+
+# ── Dependency inventory cache (probes spawn subprocesses; longer TTL) ──
+_inventory_cache: Optional[Dict[str, Any]] = None
+_inventory_cache_time: float = 0
+_INVENTORY_TTL_SECONDS: int = 300
+
+
+def _get_cached_inventory() -> Dict[str, Any]:
+    """Return cached dependency inventory, refreshing after TTL expires."""
+    global _inventory_cache, _inventory_cache_time
+    now = time.time()
+    if _inventory_cache is not None and (now - _inventory_cache_time) < _INVENTORY_TTL_SECONDS:
+        return _inventory_cache
+    _inventory_cache = discovery.discover_dependency_inventory()
+    _inventory_cache_time = now
+    return _inventory_cache
 
 
 # ── Constants ──
@@ -144,25 +162,47 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _identity(self) -> Optional[Dict[str, Any]]:
+        """Resolve the request credential into an identity, or None.
+
+        Accepted credentials: the per-session dashboard token (full admin,
+        legacy behavior), an AIRM API key, or a JWT issued by /api/auth/login."""
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return None
+        token = auth_header[7:]
+        if _validate_auth_token(token):
+            return {"subject": "dashboard-session", "role": "admin",
+                    "perms": auth.ROLES["admin"], "type": "session"}
+        return auth.authenticate(token)
+
     def _check_auth(self) -> bool:
         """Check authentication token in headers."""
-        auth_header = self.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-            return _validate_auth_token(token)
-        return False
+        return self._identity() is not None
 
-    def _require_auth(self) -> bool:
-        """Require authentication, send 401 if missing."""
-        if not self._check_auth():
+    def _require_auth(self, permission: str = "") -> bool:
+        """Require authentication (401) and, if given, a permission (403)."""
+        identity = self._identity()
+        if identity is None:
             self._send_json({"error": "Unauthorized", "message": "Authentication required"}, 401)
+            return False
+        if permission and not auth.authorize(identity, permission):
+            self._send_json({"error": "Forbidden",
+                             "message": f"Requires '{permission}' permission "
+                                        f"(role: {identity['role']})"}, 403)
             return False
         return True
 
-    def _read_json_body(self) -> Dict[str, Any]:
-        """Read and parse JSON from the request body."""
+    def _drain_body(self) -> None:
+        """Read the full request body up front. Responding (e.g. 401) while
+        unread bytes sit in the socket makes some platforms send RST instead
+        of delivering the response — every POST must drain before replying."""
         length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length)
+        self._raw_body = self.rfile.read(length) if length else b""
+
+    def _read_json_body(self) -> Dict[str, Any]:
+        """Parse the JSON request body captured by _drain_body."""
+        raw = getattr(self, "_raw_body", b"")
         return json.loads(raw.decode("utf-8")) if raw else {}
 
     def _handle_get_discovery(self) -> None:
@@ -211,6 +251,8 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
             self._send_html(HTML_DASHBOARD)
         elif self.path == "/api/discovery":
             self._handle_get_discovery()
+        elif self.path == "/api/inventory":
+            self._send_json(_get_cached_inventory())
         elif self.path == "/api/providers":
             self._handle_get_providers()
         elif self.path == "/api/status":
@@ -223,8 +265,22 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def _handle_post_login(self) -> None:
+        """Exchange username/password for a JWT (12h). No prior auth required."""
+        body = self._read_json_body()
+        username = str(body.get("username", ""))[:100]
+        password = str(body.get("password", ""))
+        role = auth.verify_password(username, password)
+        if role is None:
+            time.sleep(0.5)  # blunt brute-force throttle on the loopback plane
+            self._send_json({"success": False, "message": "Invalid credentials"}, 401)
+            return
+        token = auth.jwt_issue(username, role)
+        self._send_json({"success": True, "token": token, "role": role,
+                         "expires_in": auth.JWT_TTL_SECONDS})
+
     def _handle_post_providers_validate(self) -> None:
-        if not self._require_auth():
+        if not self._require_auth("configure"):
             return
         body = self._read_json_body()
         provider = body.get("provider", "")
@@ -244,7 +300,7 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"success": success, "message": message})
 
     def _handle_post_providers_toggle(self) -> None:
-        if not self._require_auth():
+        if not self._require_auth("configure"):
             return
         body = self._read_json_body()
         provider = body.get("provider", "")
@@ -262,7 +318,7 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"success": True})
 
     def _handle_post_install(self) -> None:
-        if not self._require_auth():
+        if not self._require_auth("configure"):
             return
         # Pre-flight check: ensure at least one API key is present OR ollama has models
         providers = manager.load_yaml(manager.PROVIDERS_PATH)
@@ -295,7 +351,7 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"success": True})
 
     def _handle_post_control(self) -> None:
-        if not self._require_auth():
+        if not self._require_auth("control"):
             return
         body = self._read_json_body()
         action = body.get("action", "")
@@ -316,9 +372,12 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         """Handle POST requests."""
+        self._drain_body()
         if self.path == "/api/auth/check":
             if self._require_auth():
                 self._send_json({"success": True})
+        elif self.path == "/api/auth/login":
+            self._handle_post_login()
         elif self.path == "/api/providers/validate":
             self._handle_post_providers_validate()
         elif self.path == "/api/providers/toggle":
@@ -328,25 +387,27 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/control":
             self._handle_post_control()
         elif self.path == "/api/repair":
-            if not self._require_auth():
+            if not self._require_auth("control"):
                 return
             from .cli import cmd_repair
-            cmd_repair()
+            # interactive=False: never blocks on console consent from a server
+            # thread — dependency installs are planned and reported instead.
+            cmd_repair(interactive=False)
             self._send_json({"success": True})
         elif self.path == "/api/backup":
-            if not self._require_auth():
+            if not self._require_auth("control"):
                 return
             zip_path = manager.cmd_backup()
             self._send_json({"success": bool(zip_path), "path": zip_path or ""})
         elif self.path == "/api/restore":
-            if not self._require_auth():
+            if not self._require_auth("control"):
                 return
             body = self._read_json_body()
             idx = body.get("index", 0)
             ok = manager.cmd_restore(idx)
             self._send_json({"success": ok})
         elif self.path == "/api/diagnose":
-            if not self._require_auth():
+            if not self._require_auth("control"):
                 return
             try:
                 manager.cmd_diagnose()
@@ -361,6 +422,13 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
 def run_prompt_server(port: int = 8500) -> None:
     """Start the AIRM dashboard HTTP server and open the browser."""
     manager.ensure_runtime_dirs()
+
+    from . import migrations
+    try:
+        migrations.ensure_current()
+    except migrations.MigrationError as e:
+        manager.log("ERROR", str(e))
+        return
     token = _get_auth_token()
     manager.log("INFO", f"Starting AIRM Web Dashboard on http://127.0.0.1:{port}")
     manager.log("INFO", f"Dashboard Auth Token: {token}")

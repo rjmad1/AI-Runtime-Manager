@@ -83,10 +83,12 @@ class TestLog:
 
 
 class TestSetWindowsEnv:
-    """Tests for set_windows_env injection safety."""
+    """Tests for legacy env-write injection safety (fallback path when no
+    OS credential store is available)."""
 
     def test_escapes_single_quotes(self, monkeypatch):
-        """set_windows_env should escape single quotes to prevent PS injection."""
+        """_legacy_env_set should escape single quotes to prevent PS injection."""
+        from core.config import _legacy_env_set
         captured_cmds = []
 
         def mock_run(args, **kwargs):
@@ -96,7 +98,7 @@ class TestSetWindowsEnv:
             return FakeResult()
 
         monkeypatch.setattr("core.config.subprocess.run", mock_run)
-        set_windows_env("TEST_KEY", "value'with;injection")
+        _legacy_env_set("TEST_KEY", "value'with;injection")
 
         assert len(captured_cmds) == 1
         cmd_str = captured_cmds[0][-1]
@@ -104,13 +106,9 @@ class TestSetWindowsEnv:
         assert "value'with" not in cmd_str  # Raw single quote should not appear
 
     def test_sets_os_environ_on_success(self, monkeypatch):
-        """set_windows_env should update os.environ on success."""
-        def mock_run(args, **kwargs):
-            class FakeResult:
-                returncode = 0
-            return FakeResult()
-
-        monkeypatch.setattr("core.config.subprocess.run", mock_run)
+        """set_windows_env should update os.environ on success (store mocked)."""
+        from core import secretstore
+        monkeypatch.setattr(secretstore, "set_secret", lambda name, value: True)
         set_windows_env("TEST_ENV_VAR", "test_value")
         assert os.environ.get("TEST_ENV_VAR") == "test_value"
         # Cleanup
