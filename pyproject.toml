@@ -12,6 +12,7 @@ dependencies = [
     "litellm[proxy]==1.90.2",
     "requests==2.34.2",
     "psutil>=5.9.0",
+    'pywin32==311; sys_platform == "win32"',
 ]
 
 [project.scripts]

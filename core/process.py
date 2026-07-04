@@ -363,21 +363,27 @@ def check_and_heal() -> bool:
         return False
 
 
+def watch_loop(poll_seconds: int = 15, wait=time.sleep, should_stop=lambda: False) -> None:
+    """Core watchdog loop with injectable wait/stop hooks so it can run both
+    interactively (cmd_watch) and inside an OS service (core/service.py)."""
+    consecutive_failures = 0
+    while not should_stop():
+        if check_and_heal():
+            consecutive_failures = 0
+            delay = poll_seconds
+        else:
+            consecutive_failures += 1
+            # Exponential backoff, capped at 5 min, so a hard-broken stack
+            # is not restart-hammered in a tight loop.
+            delay = min(poll_seconds * (2 ** consecutive_failures), 300)
+            log("WARNING", f"Watchdog: stack still unhealthy ({consecutive_failures} consecutive failures). Next attempt in {delay}s.")
+        wait(delay)
+
+
 def cmd_watch(poll_seconds: int = 15) -> None:
     """Supervise the daemons and auto-restart them when they die (self-healing loop)."""
     log("INFO", f"AIRM watchdog active (polling every {poll_seconds}s). Press Ctrl+C to stop.")
-    consecutive_failures = 0
     try:
-        while True:
-            if check_and_heal():
-                consecutive_failures = 0
-                delay = poll_seconds
-            else:
-                consecutive_failures += 1
-                # Exponential backoff, capped at 5 min, so a hard-broken stack
-                # is not restart-hammered in a tight loop.
-                delay = min(poll_seconds * (2 ** consecutive_failures), 300)
-                log("WARNING", f"Watchdog: stack still unhealthy ({consecutive_failures} consecutive failures). Next attempt in {delay}s.")
-            time.sleep(delay)
+        watch_loop(poll_seconds)
     except KeyboardInterrupt:
         log("INFO", "Watchdog stopped by user.")
