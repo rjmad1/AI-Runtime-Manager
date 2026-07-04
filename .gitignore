@@ -39,3 +39,8 @@ OpenClawManager/schema-version.json
 OpenClawManager/users.yaml
 OpenClawManager/api_keys.yaml
 OpenClawManager/.jwt_secret
+
+# Local live configuration files
+OpenClawManager/settings.yaml
+OpenClawManager/providers.yaml
+OpenClawManager/models.yaml

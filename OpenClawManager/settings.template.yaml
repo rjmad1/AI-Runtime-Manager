@@ -1,0 +1,26 @@
+litellm:
+  host: 127.0.0.1
+  port: 4000
+  api_key: sk-airm-568715b61102d99bab8844914dd38760
+  set_verbose: false
+  drop_params: true
+  routing_strategy: latency-based-routing
+  num_retries: 3
+  request_timeout: 30
+openclaw:
+  host: 127.0.0.1
+  port: 18789
+  config_dir: ''
+ollama:
+  enabled: true
+  api_base: http://127.0.0.1:11434
+  autostart: true
+lifecycle:
+  log_level: INFO
+  backup_dir: backups
+  auto_cleanup_ports: true
+secrets:
+  cloud_provider: none
+  vault_mount: secret
+  azure_vault_name: ''
+  aws_region: ''
