@@ -251,8 +251,8 @@ def cmd_apikey(action: str, name: str = "") -> None:
         if not keys:
             log("INFO", "No API keys issued.")
         for k in keys:
-            scopes = ",".join(k["scopes"]) or "(full role)"
-            log("SUCCESS", f"  [{k['id']}] {k['name']}: role={k['role']} scopes={scopes} "
+            scopes_str = ",".join(k["scopes"]) or "(full role)"
+            log("SUCCESS", f"  [{k['id']}] {k['name']}: role={k['role']} scopes={scopes_str} "
                            f"type={k['type']} created={k['created']}")
         return
 
@@ -504,7 +504,7 @@ def main() -> None:
         "uninstall": cmd_uninstall,
     }
     try:
-        commands[args.command]()
+        commands[args.command]()  # type: ignore
     except LiteLLMOfflineError as e:
         log("ERROR", str(e))
         sys.exit(1)
