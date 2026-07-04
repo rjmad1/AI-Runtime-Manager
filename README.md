@@ -1,5 +1,6 @@
 # OpenClaw Workstation AI Runtime Manager (AIRM)
 
+[![CI](https://github.com/rjmad1/AI-Runtime-Manager/actions/workflows/ci.yml/badge.svg)](https://github.com/rjmad1/AI-Runtime-Manager/actions/workflows/ci.yml)
 An enterprise-grade, zero-touch, self-healing Windows installer and daemon management center for OpenClaw, LiteLLM, and Ollama.
 
 AIRM automatically discovers operating system, CPU, GPU, VRAM, and RAM specs; validates cloud credentials in real-time; routes queries across providers with fallback safety; monitors daemon health; and auto-recovers from port locks and configuration drift.
