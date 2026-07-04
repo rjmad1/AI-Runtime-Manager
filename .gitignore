@@ -30,3 +30,12 @@ __pycache__/
 # Packaging artifacts
 *.egg-info/
 .pytest_cache/
+
+# Local runtime state (schema version, config version history — may contain secrets)
+OpenClawManager/history/
+OpenClawManager/schema-version.json
+
+# Identity stores and signing keys — never commit
+OpenClawManager/users.yaml
+OpenClawManager/api_keys.yaml
+OpenClawManager/.jwt_secret

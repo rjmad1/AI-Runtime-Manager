@@ -2,9 +2,17 @@
 
 The AI Runtime Manager (AIRM) exposes a loopback-only control plane HTTP server on `http://127.0.0.1:8500`. This document outlines the REST API endpoints available for visual dashboards, scripting, or external workstation orchestration.
 
-## 🔐 Authentication
+## 🔐 Authentication & Authorization
 
-All state-changing `POST` endpoints require a session token, generated fresh on every server start and printed to the terminal (the dashboard receives it automatically via the launch URL). Requests without it are rejected with `401 Unauthorized` — this protects the local control plane against cross-site request forgery from other pages in your browser.
+All state-changing `POST` endpoints require a Bearer credential. Three credential types are accepted:
+
+1. **Session token** — generated fresh on every server start and printed to the terminal (the dashboard receives it automatically via the launch URL). Grants full `admin`.
+2. **JWT** — obtained from `POST /api/auth/login` with a local user's credentials (create users with `Manage.bat user add <name>`). Carries the user's role; expires after 12 hours.
+3. **API key** — issued with `Manage.bat apikey create <name>` (prefix `airm_`, stored as a SHA-256 digest, shown once). Can be scoped to a subset of its role's permissions and marked as a **service identity** for machine-to-machine callers.
+
+**RBAC roles:** `admin` (everything) · `operator` (`read`, `control`) · `viewer` (`read`). Endpoint permission requirements: provider validate/toggle and install need `configure`; control/repair/backup/restore/diagnose need `control`. Missing credential → `401`; valid credential without the permission → `403`. Auth events (logins, failures, key issuance/revocation) are audit-logged to `logs/audit.log`.
+
+> External IdP federation (OAuth2 / OIDC / SAML / LDAP) is intentionally not implemented at this layer — it arrives with the Enterprise Security Integration capability, which plugs into the same identity model.
 
 Pass the token as a Bearer header when scripting:
 
@@ -60,6 +68,26 @@ curl -i -X POST http://127.0.0.1:8500/api/control \
     }
     ```
 
+### 2b. Enterprise Dependency Inventory
+*   **Path:** `GET /api/inventory`
+*   **Response:** `application/json`
+*   **Description:** Returns the enterprise dependency inventory: command-line runtimes and tools (git, python, node, npm, uv, java, docker, ollama), GPU driver and SDK stacks (NVIDIA driver, CUDA, ROCm), platform features (WSL, hardware virtualization), hardware specs, and detected GPU vendors. Each item reports `status` (`present`/`missing`/`unknown`), `version`, and `path`. Results are cached for 5 minutes. The same report is available from the CLI via `Manage.bat inventory` (written to `generated/dependency-inventory.json`).
+*   **Example Response:**
+    ```json
+    {
+      "schema_version": 1,
+      "generated_at": "2026-07-04T10:00:00+00:00",
+      "platform": {"os": "Windows 11", "machine": "AMD64"},
+      "gpu_vendors": ["nvidia"],
+      "items": [
+        {"name": "python", "category": "runtime", "status": "present", "version": "3.14.0", "path": "C:\\Python314\\python.exe", "details": ""},
+        {"name": "cuda", "category": "gpu_sdk", "status": "present", "version": "12.4", "path": "C:\\...\\CUDA\\v12.4", "details": "CUDA v12.4 (nvcc)"},
+        {"name": "rocm", "category": "gpu_sdk", "status": "missing", "version": "", "path": "", "details": ""}
+      ],
+      "summary": {"present": 10, "missing": 3}
+    }
+    ```
+
 ### 3. API Key Status registry
 *   **Path:** `GET /api/providers`
 *   **Response:** `application/json`
@@ -94,6 +122,12 @@ curl -i -X POST http://127.0.0.1:8500/api/control \
 ---
 
 ## 📥 POST Endpoints
+
+### 6b. Login (JWT Issuance)
+*   **Path:** `POST /api/auth/login`
+*   **Request Body:** `{"username": "alice", "password": "..."}`
+*   **Response:** `{"success": true, "token": "<jwt>", "role": "operator", "expires_in": 43200}`
+*   **Description:** Exchanges local user credentials for an HS256 JWT carrying the user's role. Invalid credentials return `401` after a short delay. No prior authentication required.
 
 ### 7. Save & Validate API Key
 *   **Path:** `POST /api/providers/validate`
@@ -133,7 +167,7 @@ curl -i -X POST http://127.0.0.1:8500/api/control \
 
 ### 11. Run Self-Healing Repair
 *   **Path:** `POST /api/repair`
-*   **Description:** Triggers port scavenging, YAML schema verification, LiteLLM cache cleaning, and dependency verification.
+*   **Description:** Triggers port scavenging, YAML schema verification, LiteLLM cache cleaning, and dependency verification. Also audits the enterprise dependency inventory in plan-only mode: missing dependencies are reported to `generated/repair-report.json` with their remediation strategy, but installs are never executed from the API (they require interactive console consent via `Manage.bat repair`).
 
 ### 12. Create Backup Zip
 *   **Path:** `POST /api/backup`

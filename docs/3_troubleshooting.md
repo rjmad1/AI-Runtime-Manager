@@ -23,6 +23,36 @@ If services hang or behave unexpectedly, the fastest way to resolve configuratio
 3.  Cleans stale LiteLLM cache directories.
 4.  Re-runs configuration sync pipelines to match active configurations with provider specifications.
 5.  Re-installs missing library dependencies inside the local Python virtual environment.
+6.  Audits the enterprise dependency inventory (git, python, node, uv, ollama, GPU stacks, WSL, virtualization) and offers to install missing auto-installable dependencies via the platform package manager (winget on Windows, Homebrew on macOS) — each install requires your explicit `yes`. Heavy or privileged dependencies (Docker, CUDA, ROCm, drivers) get guided instructions instead. Every run writes an audit trail to `generated/repair-report.json`.
+
+---
+
+## 🧬 Version Migrations (Upgrades & Downgrades)
+
+Configuration and artifact schema changes between AIRM versions are handled by the migration framework. Migrations run **automatically** at every CLI/dashboard startup; a pre-migration backup ZIP is always taken first and restored automatically if a migration fails. Inspect and control migrations manually:
+
+```powershell
+.\Manage.bat migrate status                # current/latest schema version, pending steps, history
+.\Manage.bat migrate                       # apply pending migrations now
+.\Manage.bat migrate rollback <version>    # walk reversible downgrades back to <version>
+```
+
+If the schema on disk is **newer** than the installed AIRM build (i.e. you downgraded the app), AIRM refuses to start and tells you to upgrade or restore a backup — old code never touches state it does not understand. Irreversible migrations are marked in `migrate status`; rolling across them requires restoring a pre-migration backup (`Manage.bat restore`).
+
+---
+
+## 🗂 Configuration Versioning
+
+Every change AIRM makes to `settings.yaml`, `providers.yaml`, or `models.yaml` snapshots the previous version first (kept under `OpenClawManager/history/`, last 100 per file). Hand-edits made outside AIRM are detected as conflicts, flagged in the history, and preserved before being overwritten. All events land in the `logs/audit.log` trail.
+
+```powershell
+.\Manage.bat history list                 # numbered history (tags and external-edit flags shown)
+.\Manage.bat history diff <id>            # unified diff: snapshot → current file
+.\Manage.bat history rollback <id>        # restore a snapshot (reversible — current state is snapshotted first)
+.\Manage.bat history tag <id>             # label a known-good version
+```
+
+`history rollback` automatically recompiles the LiteLLM/OpenClaw blueprints from the restored configuration.
 
 ---
 
