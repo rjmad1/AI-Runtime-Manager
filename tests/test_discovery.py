@@ -3,8 +3,13 @@
 
 
 
+import sys
+
 from core.discovery import (
+    _gpu_vendor,
     _parse_nvidia_smi_gpus,
+    _probe_version,
+    discover_dependency_inventory,
     discover_hardware,
     evaluate_ollama_suitability,
     get_hardware_recommendations,
@@ -109,4 +114,66 @@ class TestDiscoverHardware:
             assert key in specs
         assert specs["ram_gb"] > 0  # psutil path works on every platform
         assert specs["disk"]["total_gb"] > 0
+
+
+class TestGpuVendor:
+    """GPU vendor classification from controller names."""
+
+    def test_known_vendors(self):
+        assert _gpu_vendor("NVIDIA GeForce RTX 4090") == "nvidia"
+        assert _gpu_vendor("AMD Radeon RX 7900 XTX") == "amd"
+        assert _gpu_vendor("Intel(R) UHD Graphics 770") == "intel"
+        assert _gpu_vendor("Apple Silicon (Metal)") == "apple"
+        assert _gpu_vendor("Matrox G200") == "other"
+
+
+class TestProbeVersion:
+    """Version probing of external commands."""
+
+    def test_extracts_python_version(self):
+        version = _probe_version([sys.executable, "--version"])
+        assert version and version[0].isdigit()
+
+    def test_missing_command_returns_empty(self):
+        assert _probe_version(["definitely-not-a-real-command-xyz", "--version"]) == ""
+
+
+class TestDependencyInventory:
+    """Contract: inventory always returns the full report shape."""
+
+    def test_inventory_shape(self):
+        fake_specs = {
+            "os": "TestOS 1.0",
+            "cpu": "Test CPU",
+            "ram_gb": 32.0,
+            "gpus": [{"name": "NVIDIA GeForce RTX 4090", "vram_gb": 24.0}],
+            "disk": {"total_gb": 100.0, "free_gb": 50.0},
+            "cuda": "CUDA v12.4 (nvcc)",
+        }
+        inv = discover_dependency_inventory(specs=fake_specs)
+
+        for key in ("schema_version", "generated_at", "platform", "hardware",
+                    "gpu_vendors", "items", "summary"):
+            assert key in inv
+        assert inv["schema_version"] == 1
+        assert inv["hardware"] is fake_specs
+        assert "nvidia" in inv["gpu_vendors"]
+
+        names = {i["name"] for i in inv["items"]}
+        for expected in ("git", "python", "node", "java", "docker", "ollama",
+                         "cuda", "rocm", "nvidia-driver", "virtualization"):
+            assert expected in names
+
+        for item in inv["items"]:
+            for key in ("name", "category", "status", "version", "path", "details"):
+                assert key in item
+            assert item["status"] in ("present", "missing", "unknown")
+
+        cuda = next(i for i in inv["items"] if i["name"] == "cuda")
+        assert cuda["status"] == "present"
+        assert cuda["version"] == "12.4"
+
+        summary = inv["summary"]
+        assert summary["present"] + summary["missing"] <= len(inv["items"])
+        assert summary["present"] >= 1  # python at minimum exists on the test host
 

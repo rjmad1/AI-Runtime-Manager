@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 
 def run_powershell_cmd(cmd):
@@ -411,6 +412,128 @@ def evaluate_ollama_suitability(ollama_models, specs):
         })
 
     return evaluated
+
+# --- Enterprise dependency inventory ---
+
+_VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)*[\w.\-+]*)")
+
+# (name, category, version args) — path resolved via discover_tools()/shutil.which
+_DEPENDENCY_PROBES = [
+    ("git", "tool", ["--version"]),
+    ("python", "runtime", ["--version"]),
+    ("node", "runtime", ["--version"]),
+    ("npm", "tool", ["--version"]),
+    ("uv", "tool", ["--version"]),
+    ("java", "runtime", ["-version"]),
+    ("docker", "container", ["--version"]),
+    ("ollama", "ai_runtime", ["--version"]),
+]
+
+
+def _probe_version(args, timeout=10):
+    """Run a version command and return the first version-looking token, or ''."""
+    try:
+        res = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        # java prints to stderr; wsl prints UTF-16 (null bytes under a cp1252 decode)
+        out = ((res.stdout or "") + (res.stderr or "")).replace("\x00", "")
+        m = _VERSION_RE.search(out)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+def _gpu_vendor(name):
+    """Classify a video controller name into a GPU vendor tag."""
+    n = name.lower()
+    if any(k in n for k in ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla")):
+        return "nvidia"
+    if any(k in n for k in ("amd", "radeon")):
+        return "amd"
+    if "intel" in n:
+        return "intel"
+    if "apple" in n:
+        return "apple"
+    return "other"
+
+
+def _detect_virtualization():
+    """Return (status, details) for hypervisor availability on this platform."""
+    system = platform.system()
+    try:
+        if system == "Windows":
+            out = run_powershell_cmd("(Get-CimInstance Win32_ComputerSystem).HypervisorPresent")
+            return ("present" if out.strip().lower() == "true" else "missing", "Hyper-V hypervisor")
+        if system == "Darwin":
+            res = subprocess.run(["sysctl", "-n", "kern.hv_support"], capture_output=True, text=True)
+            return ("present" if res.stdout.strip() == "1" else "missing", "Hypervisor.framework")
+        if os.path.exists("/dev/kvm"):
+            return ("present", "/dev/kvm")
+        with open("/proc/cpuinfo", encoding="utf-8") as f:
+            flags = f.read()
+        return ("present" if ("vmx" in flags or "svm" in flags) else "missing", "cpu virtualization flags")
+    except Exception:
+        return ("unknown", "")
+
+
+def discover_dependency_inventory(specs=None):
+    """Build the enterprise dependency inventory: runtimes, SDKs, drivers, and
+    platform features, each reported as present/missing with version and path."""
+    specs = specs or discover_hardware()
+    tools = discover_tools()
+    items = []
+
+    def add(name, category, status, version="", path="", details=""):
+        items.append({
+            "name": name, "category": category, "status": status,
+            "version": version, "path": path, "details": details,
+        })
+
+    # Command-line runtimes and tools
+    for name, category, ver_args in _DEPENDENCY_PROBES:
+        path = tools.get(name) or shutil.which(name)
+        if path:
+            add(name, category, "present", _probe_version([path, *ver_args]), path)
+        else:
+            add(name, category, "missing")
+
+    # NVIDIA driver (nvidia-smi reports the driver version directly)
+    smi = shutil.which("nvidia-smi")
+    driver_ver = _probe_version([smi, "--query-gpu=driver_version", "--format=csv,noheader"]) if smi else ""
+    add("nvidia-driver", "gpu_driver", "present" if smi else "missing", driver_ver, smi or "")
+
+    # CUDA toolkit/runtime (already probed by discover_hardware)
+    cuda = specs.get("cuda", "Not Detected")
+    cuda_m = _VERSION_RE.search(cuda)
+    add("cuda", "gpu_sdk", "present" if cuda != "Not Detected" else "missing",
+        cuda_m.group(1) if cuda_m else "", os.environ.get("CUDA_PATH", ""), cuda)
+
+    # ROCm / HIP
+    rocm_path = shutil.which("rocm-smi") or shutil.which("hipcc") or (
+        "/opt/rocm" if os.path.isdir("/opt/rocm") else "")
+    rocm_ver = _probe_version([rocm_path, "--version"]) if rocm_path and os.path.isfile(rocm_path) else ""
+    add("rocm", "gpu_sdk", "present" if rocm_path else "missing", rocm_ver, rocm_path)
+
+    # WSL (Windows only)
+    if platform.system() == "Windows":
+        wsl = shutil.which("wsl")
+        add("wsl", "platform", "present" if wsl else "missing",
+            _probe_version([wsl, "--version"]) if wsl else "", wsl or "")
+
+    # Hardware virtualization
+    virt_status, virt_details = _detect_virtualization()
+    add("virtualization", "platform", virt_status, details=virt_details)
+
+    present = sum(1 for i in items if i["status"] == "present")
+    return {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "platform": {"os": specs.get("os", ""), "machine": platform.machine()},
+        "hardware": specs,
+        "gpu_vendors": sorted({_gpu_vendor(g["name"]) for g in specs.get("gpus", [])}),
+        "items": items,
+        "summary": {"present": present, "missing": len(items) - present},
+    }
+
 
 def run_all_discovery(settings_path):
     """Aggregate all discovery findings into a single data structure."""
