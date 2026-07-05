@@ -59,5 +59,7 @@ Write-Host "[v] Dependencies               : SUCCESS" -ForegroundColor Green
 Write-Host "[v] Web Guided Assistant       : SUCCESS" -ForegroundColor Green
 Write-Host "==============================================" -ForegroundColor Green
 Write-Host "[SUCCESS] OpenClaw Workstation installation completed successfully." -ForegroundColor Green
-Write-Host "You can manage your servers using manage.ps1 or Manage.bat." -ForegroundColor Green
+Write-Host ""
+Write-Host "NEXT STEP: Run '.\Start.bat' or '.\Manage.bat start' to launch the background services." -ForegroundColor Cyan
+Write-Host "For advanced options, run '.\Manage.bat' directly." -ForegroundColor Cyan
 Write-Host ""

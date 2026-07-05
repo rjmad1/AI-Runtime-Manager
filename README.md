@@ -50,6 +50,15 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 
 Once prerequisites are configured silently, the installer launches the **Visual Setup Assistant** in your browser (`http://127.0.0.1:8500`) to validate credentials, map local models, and start the background services.
 
+### Post-Installation
+
+After the initial setup is complete, you can launch the services at any time:
+
+*   **Windows**: Double-click `Start.bat` or run `.\Start.bat` in the terminal.
+*   **Linux/macOS**: Run `./start.sh` in the terminal.
+
+These scripts automatically start the required background daemons and leave the terminal open for monitoring. You can also use the Visual Setup Assistant to start and stop services visually.
+
 ---
 
 ## ⚙️ Service Command Wrappers

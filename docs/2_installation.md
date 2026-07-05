@@ -31,7 +31,7 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 2.  Retrieves the latest production-ready packages from GitHub.
 3.  Performs a silent system prerequisite check (installing Git, Python 3.11+, Node.js LTS, and `uv` via winget if missing).
 4.  Sets up a Python virtual environment and installs LiteLLM, PyYAML, and requests dependencies.
-5.  Launches the **Visual Web Assistant** dashboard in your default web browser to configure API credentials and start services.
+5.  Launches the **Visual Web Assistant** dashboard in your default web browser. This dashboard allows you to monitor installation progress, discover hardware specs, configure API credentials, and start/stop services.
 
 ---
 
@@ -42,7 +42,7 @@ If you have downloaded the repository as a ZIP archive:
 1.  **Extract the archive** to your desired folder (e.g. `C:\AI-Runtime-Manager`).
 2.  **Open the folder** in File Explorer.
 3.  **Double-click `Install.bat`** to run the bootstrapping process.
-4.  Once the terminal completes the silent prerequisite check, it will automatically open the **Web Guided Setup** in your default web browser (`http://127.0.0.1:8500`).
+4.  Once the terminal completes the silent prerequisite check, it will automatically open the **Web Guided Setup** in your default web browser (`http://127.0.0.1:8500`). This UI provides real-time installation progress, hardware discovery, and lifecycle controls.
 
 ---
 
@@ -55,7 +55,19 @@ Once the browser assistant dashboard opens:
     *   Click **Save & Validate** to test key connectivity in real-time.
     *   AIRM saves valid keys into the native OS credential store (Windows Credential Manager with DPAPI encryption at rest, macOS Keychain, or Linux Secret Service). Keys found in legacy plaintext locations (registry environment variables, `~/.airm_env`) are automatically promoted into the store on first read; every write, rotation, and deletion is audit-logged to `logs/audit.log` (names only — never values). Manage keys from the CLI with `Manage.bat secret list|set|rotate|delete <ENV_VAR>`. Enterprise vault read-through (HashiCorp Vault, Azure Key Vault, AWS Secrets Manager) can be enabled via the `secrets:` section in `settings.yaml` using each vault's official CLI.
 3.  **Enable Local Models**: If Ollama is running, select any local models you wish to use. The UI will indicate whether your VRAM supports them.
-4.  **Click 'Launch Auto Installation'**: AIRM will compile LiteLLM configs, sync OpenClaw gateways, and boot up both background service daemons. You can close the browser setup page once finalized.
+4.  **Click 'Launch Auto Installation'**: AIRM will compile LiteLLM configs, sync OpenClaw gateways, and boot up both background service daemons. You can close the browser setup page once finalized, or keep it open to start and stop your servers visually in the future.
+
+---
+
+## ▶️ Running the Application Post-Installation
+
+After your initial setup through the web dashboard, you can quickly launch the system for daily use without repeating the installation process:
+
+1.  Navigate to your installation folder (e.g. `C:\AI-Runtime-Manager`).
+2.  Double-click **`Start.bat`** (or run `./start.sh` on Unix).
+3.  The script will automatically start the background services (LiteLLM Proxy and OpenClaw Gateway) and poll for their readiness.
+
+For more advanced lifecycle controls (like stopping the services, running self-healing, or generating backups), you can use the Visual Dashboard, or use `Manage.bat` via the command line.
 
 ---
 

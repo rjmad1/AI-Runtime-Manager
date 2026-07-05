@@ -39,6 +39,8 @@ echo [v] Dependencies               : SUCCESS
 echo [v] Web Guided Assistant       : SUCCESS
 echo ==============================================
 echo [SUCCESS] OpenClaw Workstation installation completed successfully.
-echo You can manage your servers using Manage.bat.
+echo.
+echo NEXT STEP: Run 'Start.bat' or 'Manage.bat start' to launch the background services.
+echo For advanced options, you can run 'Manage.bat' directly.
 echo.
 pause
