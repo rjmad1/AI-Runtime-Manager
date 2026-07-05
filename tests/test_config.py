@@ -95,9 +95,11 @@ class TestSetWindowsEnv:
             captured_cmds.append(args)
             class FakeResult:
                 returncode = 0
+                stdout = b""
             return FakeResult()
 
         monkeypatch.setattr("core.config.subprocess.run", mock_run)
+        monkeypatch.setattr("core.config.platform.system", lambda: "Windows")
         _legacy_env_set("TEST_KEY", "value'with;injection")
 
         assert len(captured_cmds) == 1
