@@ -4,6 +4,9 @@
 
 
 import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from core.discovery import (
     _gpu_vendor,
@@ -14,6 +17,30 @@ from core.discovery import (
     evaluate_ollama_suitability,
     get_hardware_recommendations,
 )
+
+
+@pytest.fixture(autouse=True)
+def mock_subprocess_run():
+    """Mock subprocess.run to prevent host platform leakage."""
+    with patch("core.discovery.subprocess.run") as mock_run:
+        def side_effect(args, **kwargs):
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stderr = ""
+            if "nvcc" in str(args):
+                mock_result.stdout = "release 12.4, V12.4"
+            else:
+                mock_result.stdout = "mocked output 1.0.0"
+            return mock_result
+        mock_run.side_effect = side_effect
+        yield mock_run
+
+@pytest.fixture(autouse=True)
+def mock_shutil_which():
+    """Mock shutil.which to prevent host platform leakage."""
+    with patch("core.discovery.shutil.which") as mock_which:
+        mock_which.return_value = "/usr/bin/mocked"
+        yield mock_which
 
 
 class TestHardwareRecommendations:
@@ -132,9 +159,10 @@ class TestProbeVersion:
 
     def test_extracts_python_version(self):
         version = _probe_version([sys.executable, "--version"])
-        assert version and version[0].isdigit()
+        assert version == "1.0.0"
 
-    def test_missing_command_returns_empty(self):
+    def test_missing_command_returns_empty(self, mock_subprocess_run):
+        mock_subprocess_run.side_effect = Exception("Command not found")
         assert _probe_version(["definitely-not-a-real-command-xyz", "--version"]) == ""
 
 

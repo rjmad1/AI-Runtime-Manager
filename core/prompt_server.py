@@ -245,6 +245,20 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
             zips = [f for f in os.listdir(backup_dir) if f.endswith(".zip")]
         self._send_json(zips)
 
+    def _handle_get_watchdog_logs(self) -> None:
+        """Expose real-time self-healing logs."""
+        logs: List[str] = []
+        if os.path.exists(LOG_FILE):
+            try:
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    # Filter logs related to self-healing, repair, and watchdog, or return last 200
+                    all_lines = f.readlines()
+                    watchdog_lines = [line.strip() for line in all_lines if any(kw in line.lower() for kw in ("watchdog", "repair", "self-healing", "restart", "fail"))]
+                    logs = watchdog_lines[-200:]
+            except Exception:
+                pass
+        self._send_json({"logs": logs})
+
     def do_GET(self) -> None:  # noqa: N802
         """Handle GET requests."""
         if self.path == "/":
@@ -274,6 +288,10 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
             if not self._require_auth("read"):
                 return
             self._handle_get_backups()
+        elif self.path == "/api/logs/watchdog":
+            if not self._require_auth("read"):
+                return
+            self._handle_get_watchdog_logs()
         else:
             self.send_error(404)
 

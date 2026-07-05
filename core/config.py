@@ -539,6 +539,35 @@ def cmd_configure() -> None:
     sys_details = discovery.run_all_discovery(SETTINGS_PATH)
     tools = sys_details["tools"]
 
+    # --- Strict version validation checks ---
+    log("INFO", "Validating LiteLLM and OpenClaw versions...")
+    try:
+        litellm_ver_res = subprocess.run([sys.executable, "-c", "import litellm; print(litellm.__version__)"], capture_output=True, text=True, check=True)
+        litellm_ver = litellm_ver_res.stdout.strip()
+        if litellm_ver:
+            log("SUCCESS", f"LiteLLM version: {litellm_ver}")
+        else:
+            log("WARNING", "LiteLLM version could not be determined.")
+    except subprocess.CalledProcessError as e:
+        log("ERROR", f"LiteLLM is not installed or version check failed. Please install LiteLLM. ({e})")
+        raise RuntimeError("LiteLLM version validation failed.")
+
+    openclaw_cmd = "openclaw" if shutil.which("openclaw") else os.path.join(ROOT_DIR, "node_modules", ".bin", "openclaw")
+    if platform.system() == "Windows" and not shutil.which("openclaw") and os.path.exists(openclaw_cmd + ".cmd"):
+        openclaw_cmd += ".cmd"
+
+    try:
+        # Run openclaw --version
+        oc_ver_res = subprocess.run([openclaw_cmd, "--version"], capture_output=True, text=True, timeout=10)
+        oc_ver = oc_ver_res.stdout.strip()
+        if oc_ver:
+            log("SUCCESS", f"OpenClaw version: {oc_ver}")
+        else:
+            log("WARNING", "OpenClaw version could not be determined. (Is it installed?)")
+    except Exception as e:
+        log("WARNING", f"OpenClaw version check failed: {e}. If it's not installed, use the bootstrap script.")
+    # ---------------------------------------
+
     ollama_models = _setup_ollama(settings, tools, discovery)
     _compile_litellm_config(settings, providers, models_reg, ollama_models)
     openclaw_cfg, openclaw_models = _compile_openclaw_config(settings, providers, models_reg, ollama_models)

@@ -207,6 +207,28 @@ def get_hardware_recommendations(specs):
         "max_local_param_size": "70B" if tier == "Ultra" else "14B" if tier == "High" else "3B" if tier == "Medium" else "None"
     }
 
+def check_enterprise_proxy():
+    """Automated pre-flight system checks to flag local enterprise proxy interference early."""
+    proxy_info = {
+        "http_proxy": os.environ.get("HTTP_PROXY", os.environ.get("http_proxy")),
+        "https_proxy": os.environ.get("HTTPS_PROXY", os.environ.get("https_proxy")),
+        "interference_detected": False,
+        "details": ""
+    }
+
+    if proxy_info["http_proxy"] or proxy_info["https_proxy"]:
+        import urllib.error
+        import urllib.request
+        try:
+            req = urllib.request.Request("https://registry.npmjs.org/", method="HEAD")
+            with urllib.request.urlopen(req, timeout=5):
+                pass
+        except urllib.error.URLError as e:
+            proxy_info["interference_detected"] = True
+            proxy_info["details"] = str(e)
+
+    return proxy_info
+
 def discover_tools():
     """Detect local paths of required installation tools."""
     tools = {}
@@ -561,6 +583,8 @@ def run_all_discovery(settings_path):
     # Load LiteLLM metadata
     catalog = load_litellm_catalog()
 
+    proxy_info = check_enterprise_proxy()
+
     return {
         "specs": specs,
         "recommendations": recs,
@@ -570,7 +594,8 @@ def run_all_discovery(settings_path):
             "api_connected": len(ollama_models) > 0,
             "models": evaluated_ollama
         },
-        "litellm_catalog": catalog
+        "litellm_catalog": catalog,
+        "network": proxy_info
     }
 
 if __name__ == "__main__":

@@ -111,6 +111,12 @@ class TestConfigureCompilation:
         # real module was already imported, so patch that too.
         monkeypatch.setattr("core.discovery", mock_discovery, raising=False)
 
+        # Patch subprocess and shutil for version validation in cmd_configure
+        mock_run = MagicMock()
+        mock_run.return_value = MagicMock(stdout="1.0.0", returncode=0)
+        monkeypatch.setattr("core.config.subprocess.run", mock_run)
+        monkeypatch.setattr("core.config.shutil.which", MagicMock(return_value="/mocked/path"))
+
         from core.config import cmd_configure
         cmd_configure()
 
@@ -168,6 +174,12 @@ class TestConfigureCompilation:
         mock_discovery.get_ollama_models.return_value = []
         monkeypatch.setitem(sys.modules, "core.discovery", mock_discovery)
         monkeypatch.setattr("core.discovery", mock_discovery, raising=False)
+
+        # Patch subprocess and shutil for version validation in cmd_configure
+        mock_run = MagicMock()
+        mock_run.return_value = MagicMock(stdout="1.0.0", returncode=0)
+        monkeypatch.setattr("core.config.subprocess.run", mock_run)
+        monkeypatch.setattr("core.config.shutil.which", MagicMock(return_value="/mocked/path"))
 
         from core.config import cmd_configure
         cmd_configure()
