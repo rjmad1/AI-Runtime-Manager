@@ -7,8 +7,35 @@ Write-Host "==============================================" -ForegroundColor Cya
 Write-Host "      OpenClaw Workstation Bootstrapper" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$scriptDir = $PSScriptRoot
 
+if (-not $scriptDir) {
+    # Script was run via iex (in-memory)
+    $scriptDir = $PWD.Path
+}
+
+# Prevent installing directly into System32
+if ($scriptDir -match "System32") {
+    $scriptDir = $env:USERPROFILE
+    Set-Location $scriptDir
+    Write-Host "[INFO] Redirecting install from System32 to $scriptDir" -ForegroundColor Cyan
+}
+
+# If the core script doesn't exist here, we need to clone the repository
+if (-not (Test-Path (Join-Path $scriptDir "core\bootstrap.py"))) {
+    Write-Host "[INFO] Repository not found locally. Cloning from GitHub..." -ForegroundColor Cyan
+    $repoDir = Join-Path $scriptDir "AI-Runtime-Manager"
+    
+    if (-not (Test-Path (Join-Path $repoDir "core\bootstrap.py"))) {
+        git clone https://github.com/rjmad1/AI-Runtime-Manager.git $repoDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] Failed to clone repository. Is Git installed?" -ForegroundColor Red
+            Exit 1
+        }
+    }
+    $scriptDir = $repoDir
+    Set-Location $scriptDir
+}
 # 1. Detect Python
 $pythonPath = Get-Command python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Definition
 if (-not $pythonPath -and (Test-Path "C:\Python314\python.exe")) {
