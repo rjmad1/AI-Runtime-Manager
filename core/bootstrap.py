@@ -2,11 +2,15 @@
 # Platform-agnostic environment bootstrap script.
 # Assumes Python 3.10+ is already installed.
 
+import os
 import platform
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+if platform.system() == 'Windows':
+    import winreg
 
 
 def log_info(msg):
@@ -39,17 +43,50 @@ def run_cmd(cmd, cwd=None, capture=False):
     except FileNotFoundError:
         return False
 
+def refresh_windows_path():
+    if platform.system() != "Windows":
+        return
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"System\CurrentControlSet\Control\Session Manager\Environment") as key:
+            sys_path = winreg.QueryValueEx(key, "Path")[0]
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment") as key:
+            usr_path = winreg.QueryValueEx(key, "Path")[0]
+        os.environ["PATH"] = f"{sys_path};{usr_path}"
+        log_info("Environment PATH refreshed from registry.")
+    except Exception as e:
+        log_warn(f"Failed to refresh PATH from registry: {e}")
+
+def run_cmd_retry(cmd, cwd=None, retries=3):
+    import time
+    for attempt in range(1, retries + 1):
+        if run_cmd(cmd, cwd=cwd):
+            return True
+        log_warn(f"Command failed (attempt {attempt}/{retries}). Retrying in 2 seconds...")
+        time.sleep(2)
+    return False
+
+def check_usability(cmd):
+    try:
+        subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
 def ensure_node():
-    if shutil.which("node"):
-        log_success("Node.js detected.")
+    if shutil.which("node") and check_usability(["node", "-v"]):
+        log_success("Node.js detected and usable.")
         return True
 
-    log_warn("Node.js not detected.")
+    log_warn("Node.js not detected or not usable.")
     if platform.system() == "Windows":
         log_info("Attempting to install Node.js via winget...")
         if run_cmd(["winget", "install", "--silent", "--accept-source-agreements", "--accept-package-agreements", "OpenJS.NodeJS.LTS"]):
-            log_success("Node.js installed. Note: You may need to restart your terminal after bootstrap completes.")
-            return True
+            refresh_windows_path()
+            if shutil.which("node") and check_usability(["node", "-v"]):
+                log_success("Node.js installed and verified.")
+                return True
+            else:
+                log_error("Node.js installed but still not usable. You may need to manually add it to PATH.")
         else:
             log_error("Failed to install Node.js via winget.")
 
@@ -57,17 +94,19 @@ def ensure_node():
     sys.exit(1)
 
 def ensure_git():
-    if shutil.which("git"):
-        log_success("Git detected.")
+    if shutil.which("git") and check_usability(["git", "--version"]):
+        log_success("Git detected and usable.")
         return True
 
-    log_warn("Git not detected.")
+    log_warn("Git not detected or not usable.")
     if platform.system() == "Windows":
         log_info("Attempting to install Git via winget...")
         if run_cmd(["winget", "install", "--silent", "--accept-source-agreements", "--accept-package-agreements", "Git.Git"]):
-            log_success("Git installed.")
-            return True
-    log_warn("Git is highly recommended. Please install it manually.")
+            refresh_windows_path()
+            if shutil.which("git") and check_usability(["git", "--version"]):
+                log_success("Git installed and verified.")
+                return True
+    log_warn("Git is highly recommended but not usable. Please install it manually.")
     return False
 
 def get_uv_path():
@@ -93,9 +132,12 @@ def setup_venv(root_dir: Path):
         log_info("Creating virtual environment...")
         uv_path = get_uv_path()
         if uv_path:
-            run_cmd([uv_path, "venv", str(venv_dir)])
-        else:
-            log_info("uv not found, using standard venv...")
+            if not run_cmd([uv_path, "venv", str(venv_dir)]):
+                log_warn("uv venv failed. Falling back to standard venv...")
+                uv_path = None
+
+        if not uv_path:
+            log_info("using standard venv...")
             run_cmd([sys.executable, "-m", "venv", str(venv_dir)])
         log_success("Virtual environment created.")
 
@@ -114,9 +156,12 @@ def install_python_deps(root_dir: Path, venv_dir: Path):
 
     success = False
     if uv_path:
-        success = run_cmd([uv_path, "pip", "install", "--python", venv_python, "-r", str(req_file)])
-    else:
-        success = run_cmd([venv_python, "-m", "pip", "install", "-r", str(req_file)])
+        success = run_cmd_retry([uv_path, "pip", "install", "--python", venv_python, "-r", str(req_file)])
+
+    if not success:
+        if uv_path:
+            log_warn("uv pip install failed. Falling back to pip...")
+        success = run_cmd_retry([venv_python, "-m", "pip", "install", "-r", str(req_file)])
 
     if not success:
         log_error("Failed to install Python dependencies. Please check your network connection or build tools.")
@@ -129,16 +174,16 @@ def install_openclaw(root_dir: Path):
         log_success("Local OpenClaw installation detected.")
         return
 
-    if shutil.which("openclaw"):
+    if shutil.which("openclaw") and check_usability(["openclaw", "--version"]):
         log_success("Global OpenClaw installation detected.")
         return
 
     log_info("Installing OpenClaw via npm...")
-    if run_cmd(["npm", "install", "-g", "openclaw"]):
+    if run_cmd_retry(["npm", "install", "-g", "openclaw"]):
         log_success("OpenClaw installed globally.")
     else:
         log_warn("Global install failed. Attempting local install...")
-        if run_cmd(["npm", "install", "openclaw"], cwd=str(root_dir)):
+        if run_cmd_retry(["npm", "install", "openclaw"], cwd=str(root_dir)):
             log_success("OpenClaw installed locally.")
         else:
             log_error("Failed to install openclaw. Please install Node/npm and run 'npm install openclaw' manually.")
@@ -154,7 +199,7 @@ def main():
     # 1. Ensure UV is available
     if not get_uv_path():
         log_info("Installing uv via pip...")
-        run_cmd([sys.executable, "-m", "pip", "install", "uv", "--user"])
+        run_cmd_retry([sys.executable, "-m", "pip", "install", "uv", "--user"])
 
     # 2. System dependencies
     ensure_git()

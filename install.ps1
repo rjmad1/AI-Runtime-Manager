@@ -27,9 +27,38 @@ if (-not (Test-Path (Join-Path $scriptDir "core\bootstrap.py"))) {
     $repoDir = Join-Path $scriptDir "AI-Runtime-Manager"
     
     if (-not (Test-Path (Join-Path $repoDir "core\bootstrap.py"))) {
+        # Check if Git is installed and usable
+        $gitUsable = $false
+        $gitPath = Get-Command git -ErrorAction SilentlyContinue
+        if ($gitPath) {
+            try {
+                $gitVer = git --version 2>&1
+                if ($gitVer -match "git version") { $gitUsable = $true }
+            } catch {}
+        }
+
+        if (-not $gitUsable) {
+            Write-Host "[INFO] Git not found or unusable. Attempting to install Git via winget..." -ForegroundColor Yellow
+            try {
+                Start-Process winget -ArgumentList "install --silent --accept-source-agreements --accept-package-agreements Git.Git" -NoNewWindow -Wait
+                $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+                try {
+                    $gitVer = git --version 2>&1
+                    if ($gitVer -match "git version") { $gitUsable = $true }
+                } catch {}
+            } catch {
+                Write-Host "[ERROR] Failed to install Git." -ForegroundColor Red
+                Exit 1
+            }
+            if (-not $gitUsable) {
+                Write-Host "[ERROR] Git is required to clone the repository. Please install Git manually." -ForegroundColor Red
+                Exit 1
+            }
+        }
+
         git clone https://github.com/rjmad1/AI-Runtime-Manager.git $repoDir
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "[ERROR] Failed to clone repository. Is Git installed?" -ForegroundColor Red
+            Write-Host "[ERROR] Failed to clone repository." -ForegroundColor Red
             Exit 1
         }
     }
@@ -44,19 +73,33 @@ if (-not $pythonPath -and (Test-Path "C:\Python314\python.exe")) {
     $pythonPath = "$env:LocalAppData\Programs\Python\Python311\python.exe"
 }
 
-if (-not $pythonPath) {
-    Write-Host "[INFO] Python not found. Attempting to install Python 3.11 via winget..." -ForegroundColor Yellow
+$pythonUsable = $false
+if ($pythonPath) {
+    try {
+        $pyVer = & $pythonPath --version 2>&1
+        if ($pyVer -match "Python") { $pythonUsable = $true }
+    } catch {}
+}
+
+if (-not $pythonUsable) {
+    Write-Host "[INFO] Python not found or unusable. Attempting to install Python 3.11 via winget..." -ForegroundColor Yellow
     try {
         Start-Process winget -ArgumentList "install --silent --accept-source-agreements --accept-package-agreements Python.Python.3.11" -NoNewWindow -Wait
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
         $pythonPath = Get-Command python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Definition
+        if ($pythonPath) {
+            try {
+                $pyVer = & $pythonPath --version 2>&1
+                if ($pyVer -match "Python") { $pythonUsable = $true }
+            } catch {}
+        }
     } catch {
         Write-Host "[ERROR] Failed to install Python." -ForegroundColor Red
         Exit 1
     }
 }
-if (-not $pythonPath) {
-    Write-Host "[ERROR] Python 3 not found. Please install Python 3.10+ manually." -ForegroundColor Red
+if (-not $pythonUsable) {
+    Write-Host "[ERROR] Python 3 not found or unusable. Please install Python 3.10+ manually." -ForegroundColor Red
     Exit 1
 }
 
