@@ -21,17 +21,6 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-:: 3. Run the Python interactive installer in the .venv
-if exist "%~dp0.venv\Scripts\python.exe" (
-    pushd "%~dp0"
-    ".venv\Scripts\python.exe" -m core.manager install
-    popd
-) else (
-    echo [ERROR] Virtual environment python was not found after bootstrap!
-    pause
-    exit /b 1
-)
-
 echo.
 echo [SUCCESS] OpenClaw Workstation installation completed successfully.
 echo You can manage your servers using Manage.bat.

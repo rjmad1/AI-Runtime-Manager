@@ -8,7 +8,6 @@ Write-Host "      OpenClaw Workstation Bootstrapper" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$venvDir = Join-Path $scriptDir ".venv"
 
 # 1. Detect Python
 $pythonPath = Get-Command python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Definition
@@ -41,16 +40,5 @@ $bootstrapScript = Join-Path $scriptDir "core\bootstrap.py"
 & $pythonPath $bootstrapScript
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Python bootstrap failed." -ForegroundColor Red
-    Exit 1
-}
-
-# 3. Launch Manager
-Write-Host "[INFO] Launching Web Guided Assistant..." -ForegroundColor Cyan
-$venvPython = Join-Path $venvDir "Scripts\python.exe"
-if (Test-Path $venvPython) {
-    Set-Location $scriptDir
-    & $venvPython -m core.manager install
-} else {
-    Write-Host "[ERROR] Virtual environment python was not found after bootstrap setup!" -ForegroundColor Red
     Exit 1
 }

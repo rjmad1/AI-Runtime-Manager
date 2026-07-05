@@ -90,7 +90,7 @@ def get_pids_on_port(port: int) -> List[int]:
     pids: set = set()
     try:
         for conn in psutil.net_connections(kind='tcp'):
-            if conn.laddr.port == port and conn.status == 'LISTEN':
+            if conn.laddr and conn.laddr[1] == port and conn.status == 'LISTEN':
                 if conn.pid is not None:
                     pids.add(conn.pid)
         return list(pids)
@@ -99,7 +99,10 @@ def get_pids_on_port(port: int) -> List[int]:
     except Exception as e:
         log("WARNING", f"Could not list TCP connections via psutil: {e}")
 
-    # Fallback for Windows without elevation
+    return _get_pids_on_port_fallback(port, pids)
+
+def _get_pids_on_port_fallback(port: int, pids: set) -> List[int]:
+    """Fallback for Windows without elevation."""
     if platform.system() == "Windows":
         try:
             out = subprocess.check_output(["netstat", "-ano"], text=True)
@@ -139,7 +142,7 @@ def kill_process_tree(pid: int) -> bool:
                 pass
         parent.terminate()
 
-        gone, alive = psutil.wait_procs(children + [parent], timeout=3)
+        _, alive = psutil.wait_procs(children + [parent], timeout=3)
         for p in alive:
             log("WARNING", f"PID {p.pid} still alive. Force killing...")
             try:
@@ -266,17 +269,7 @@ def _spawn_openclaw(openclaw_port: int, discovery: Any, litellm_pid: int) -> sub
     return openclaw_proc
 
 
-def cmd_start() -> None:
-    """Start LiteLLM and OpenClaw daemon processes."""
-    log("INFO", "Starting AIRM system stack daemons...")
-
-    from . import discovery
-
-    settings = load_yaml(SETTINGS_PATH)
-    litellm_port: int = settings.get("litellm", {}).get("port", 4000)
-    openclaw_port: int = settings.get("openclaw", {}).get("port", 18789)
-    litellm_key: str = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
-
+def _check_port_conflicts(settings: Dict[str, Any], litellm_port: int, openclaw_port: int) -> None:
     if settings.get("lifecycle", {}).get("auto_cleanup_ports", True):
         scavenge_ports([litellm_port, openclaw_port])
     else:
@@ -289,7 +282,7 @@ def cmd_start() -> None:
             log("ERROR", f"Port collisions detected on {conflicts} and auto_cleanup_ports is False.")
             raise RuntimeError(f"Port collision detected on {conflicts}.")
 
-    # Pre-flight VRAM Profiling
+def _run_vram_profiling(settings: Dict[str, Any], discovery: Any) -> None:
     if settings.get("ollama", {}).get("enabled", False) and settings.get("ollama", {}).get("autostart", False):
         log("INFO", "Performing Pre-flight VRAM Availability Profiling...")
         try:
@@ -302,6 +295,20 @@ def cmd_start() -> None:
         except Exception as e:
             log("WARNING", f"Pre-flight VRAM Profiling failed: {e}")
 
+def cmd_start() -> None:
+    """Start LiteLLM and OpenClaw daemon processes."""
+    log("INFO", "Starting AIRM system stack daemons...")
+
+    from . import discovery
+
+    settings = load_yaml(SETTINGS_PATH)
+    litellm_port: int = settings.get("litellm", {}).get("port", 4000)
+    openclaw_port: int = settings.get("openclaw", {}).get("port", 18789)
+    litellm_key: str = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
+
+    _check_port_conflicts(settings, litellm_port, openclaw_port)
+    _run_vram_profiling(settings, discovery)
+
     # Setup process env for configuration injection
     os.environ["OPENCLAW_GATEWAY_PORT"] = str(openclaw_port)
     os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -311,9 +318,10 @@ def cmd_start() -> None:
     for _p_name, p_info in providers.items():
         if isinstance(p_info, dict) and p_info.get("enabled", False):
             var = p_info.get("env_var")
-            val = get_windows_env(var)
-            if val:
-                os.environ[var] = val
+            if isinstance(var, str):
+                val = get_windows_env(var)
+                if val:
+                    os.environ[var] = val
 
     cmd_configure()
 
@@ -382,7 +390,13 @@ def cmd_status() -> Dict[str, Any]:
     print("\n==============================================")
     print("      AIRM Server Daemon Status Dashboard")
     print("==============================================")
-    print(f"LiteLLM Proxy (Port {litellm_port}):     {l_status} (PID: {l_pid or 'N/A'}, Active on Port: {l_pids_on_port}, Readiness: {'HEALTHY' if l_ready else 'UNRESPONSIVE' if l_status == 'ONLINE' else 'N/A'})")
+    
+    if l_status == 'ONLINE':
+        l_ready_str = 'HEALTHY' if l_ready else 'UNRESPONSIVE'
+    else:
+        l_ready_str = 'N/A'
+        
+    print(f"LiteLLM Proxy (Port {litellm_port}):     {l_status} (PID: {l_pid or 'N/A'}, Active on Port: {l_pids_on_port}, Readiness: {l_ready_str})")
     print(f"OpenClaw Gateway (Port {openclaw_port}):  {c_status} (PID: {c_pid or 'N/A'}, Active on Port: {c_pids_on_port})")
     print("==============================================")
 
@@ -442,6 +456,9 @@ def watch_loop(poll_seconds: int = 15, wait=time.sleep, should_stop=lambda: Fals
                 delay = poll_seconds
             else:
                 consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    log("ERROR", "Watchdog halted after 3 consecutive rapid failures to prevent resource exhaustion.")
+                    break
                 # Exponential backoff, capped at 5 min, so a hard-broken stack
                 # is not restart-hammered in a tight loop.
                 delay = min(poll_seconds * (2 ** consecutive_failures), 300)

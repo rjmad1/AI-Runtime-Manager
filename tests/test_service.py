@@ -66,4 +66,4 @@ class TestWatchLoop:
         monkeypatch.setattr("core.process.check_and_heal", lambda: False)
         ticks = []
         watch_loop(poll_seconds=10, wait=ticks.append, should_stop=lambda: len(ticks) >= 6)
-        assert ticks == [20, 40, 80, 160, 300, 300]  # exponential, capped at 5 min
+        assert ticks == [20, 40]  # halts after 3 consecutive failures

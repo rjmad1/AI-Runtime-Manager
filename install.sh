@@ -25,14 +25,3 @@ echo "[INFO] Using python: $($PYTHON_CMD --version)"
 
 # 2. Run Centralized Python Bootstrapper
 $PYTHON_CMD "$DIR/core/bootstrap.py"
-
-# 3. Launch Manager
-echo "[INFO] Launching Web Guided Assistant..."
-if [ -f "$VENV_DIR/bin/python" ]; then
-    cd "$DIR" && "$VENV_DIR/bin/python" -m core.manager install
-elif [ -f "$VENV_DIR/Scripts/python.exe" ]; then
-    cd "$DIR" && "$VENV_DIR/Scripts/python.exe" -m core.manager install
-else
-    echo "[ERROR] Virtual environment python was not found after bootstrap setup!"
-    exit 1
-fi

@@ -259,39 +259,29 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
                 pass
         self._send_json({"logs": logs})
 
+    def _handle_get_install_status(self) -> None:
+        with _install_lock:
+            self._send_json(dict(INSTALL_STATE))
+
     def do_GET(self) -> None:  # noqa: N802
         """Handle GET requests."""
         if self.path == "/":
             self._send_html(HTML_DASHBOARD)
-        elif self.path == "/api/discovery":
-            if not self._require_auth("read"):
-                return
-            self._handle_get_discovery()
-        elif self.path == "/api/inventory":
-            if not self._require_auth("read"):
-                return
-            self._send_json(_get_cached_inventory())
-        elif self.path == "/api/providers":
-            if not self._require_auth("read"):
-                return
-            self._handle_get_providers()
-        elif self.path == "/api/status":
-            if not self._require_auth("read"):
-                return
-            self._handle_get_status()
-        elif self.path == "/api/install/status":
-            if not self._require_auth("read"):
-                return
-            with _install_lock:
-                self._send_json(dict(INSTALL_STATE))
-        elif self.path == "/api/backups":
-            if not self._require_auth("read"):
-                return
-            self._handle_get_backups()
-        elif self.path == "/api/logs/watchdog":
-            if not self._require_auth("read"):
-                return
-            self._handle_get_watchdog_logs()
+            return
+
+        handlers = {
+            "/api/discovery": self._handle_get_discovery,
+            "/api/inventory": lambda: self._send_json(_get_cached_inventory()),
+            "/api/providers": self._handle_get_providers,
+            "/api/status": self._handle_get_status,
+            "/api/install/status": self._handle_get_install_status,
+            "/api/backups": self._handle_get_backups,
+            "/api/logs/watchdog": self._handle_get_watchdog_logs,
+        }
+
+        if self.path in handlers:
+            if self._require_auth("read"):
+                handlers[self.path]()
         else:
             self.send_error(404)
 
@@ -400,51 +390,64 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
             manager.cmd_start()
         self._send_json({"success": True})
 
+    def _handle_post_repair(self) -> None:
+        from .cli import cmd_repair
+        # interactive=False: never blocks on console consent from a server
+        # thread — dependency installs are planned and reported instead.
+        cmd_repair(interactive=False)
+        self._send_json({"success": True})
+
+    def _handle_post_backup(self) -> None:
+        zip_path = manager.cmd_backup()
+        self._send_json({"success": bool(zip_path), "path": zip_path or ""})
+
+    def _handle_post_restore(self) -> None:
+        body = self._read_json_body()
+        idx = body.get("index", 0)
+        ok = manager.cmd_restore(idx)
+        self._send_json({"success": ok})
+
+    def _handle_post_diagnose(self) -> None:
+        try:
+            manager.cmd_diagnose()
+        except LiteLLMOfflineError as e:
+            self._send_json({"success": False, "message": str(e)})
+            return
+        self._send_json({"success": True})
+
     def do_POST(self) -> None:  # noqa: N802
         """Handle POST requests."""
         self._drain_body()
+        
+        # Public or self-authenticating routes
         if self.path == "/api/auth/check":
             if self._require_auth():
                 self._send_json({"success": True})
-        elif self.path == "/api/auth/login":
-            self._handle_post_login()
-        elif self.path == "/api/providers/validate":
-            self._handle_post_providers_validate()
-        elif self.path == "/api/providers/toggle":
-            self._handle_post_providers_toggle()
-        elif self.path == "/api/install":
-            self._handle_post_install()
-        elif self.path == "/api/control":
-            self._handle_post_control()
-        elif self.path == "/api/repair":
-            if not self._require_auth("control"):
-                return
-            from .cli import cmd_repair
-            # interactive=False: never blocks on console consent from a server
-            # thread — dependency installs are planned and reported instead.
-            cmd_repair(interactive=False)
-            self._send_json({"success": True})
-        elif self.path == "/api/backup":
-            if not self._require_auth("control"):
-                return
-            zip_path = manager.cmd_backup()
-            self._send_json({"success": bool(zip_path), "path": zip_path or ""})
-        elif self.path == "/api/restore":
-            if not self._require_auth("control"):
-                return
-            body = self._read_json_body()
-            idx = body.get("index", 0)
-            ok = manager.cmd_restore(idx)
-            self._send_json({"success": ok})
-        elif self.path == "/api/diagnose":
-            if not self._require_auth("control"):
-                return
-            try:
-                manager.cmd_diagnose()
-            except LiteLLMOfflineError as e:
-                self._send_json({"success": False, "message": str(e)})
-                return
-            self._send_json({"success": True})
+            return
+            
+        public_handlers = {
+            "/api/auth/login": self._handle_post_login,
+            "/api/providers/validate": self._handle_post_providers_validate,
+            "/api/providers/toggle": self._handle_post_providers_toggle,
+            "/api/install": self._handle_post_install,
+            "/api/control": self._handle_post_control,
+        }
+        
+        if self.path in public_handlers:
+            public_handlers[self.path]()
+            return
+
+        # Control routes requiring auth
+        control_handlers = {
+            "/api/repair": self._handle_post_repair,
+            "/api/backup": self._handle_post_backup,
+            "/api/restore": self._handle_post_restore,
+            "/api/diagnose": self._handle_post_diagnose,
+        }
+
+        if self.path in control_handlers:
+            if self._require_auth("control"):
+                control_handlers[self.path]()
         else:
             self.send_error(404)
 
@@ -460,12 +463,24 @@ def run_prompt_server(port: int = 8500) -> None:
         manager.log("ERROR", str(e))
         return
     token = _get_auth_token()
+    
+    httpd = None
+    for attempt_port in range(port, port + 10):
+        try:
+            httpd = HTTPServer(("127.0.0.1", attempt_port), PromptRequestHandler)
+            port = attempt_port
+            break
+        except OSError:
+            continue
+            
+    if httpd is None:
+        manager.log("ERROR", f"Could not find an open port for the web dashboard (tried {port}-{port+9}).")
+        return
+
     manager.log("INFO", f"Starting AIRM Web Dashboard on http://127.0.0.1:{port}")
     manager.log("INFO", f"Dashboard Auth Token: {token}")
     manager.log("INFO", "Copy the token above into the dashboard login prompt.")
     manager.log("INFO", "Press Ctrl+C to stop the dashboard server.")
-
-    httpd = HTTPServer(("127.0.0.1", port), PromptRequestHandler)
 
     # Token rides in the URL fragment: never sent over the network, read once
     # by the dashboard JS for automatic login, then stripped from the URL.

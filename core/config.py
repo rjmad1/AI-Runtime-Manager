@@ -142,6 +142,15 @@ def log(level: str, message: str) -> None:
         pass
 
 
+def _deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+    for key, value in source.items():
+        if isinstance(value, dict) and key in target and isinstance(target[key], dict):
+            _deep_merge(target[key], value)
+        else:
+            target[key] = value
+    return target
+
+
 def load_yaml(path: str) -> Dict[str, Any]:
     """Load a YAML file safely, returning empty dict on failure."""
     if not os.path.exists(path):
@@ -151,7 +160,15 @@ def load_yaml(path: str) -> Dict[str, Any]:
         return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            data = yaml.safe_load(f) or {}
+            
+        template_path = path.replace(".yaml", ".template.yaml")
+        if os.path.exists(template_path) and path != template_path:
+            with open(template_path, "r", encoding="utf-8") as tf:
+                template_data = yaml.safe_load(tf) or {}
+                data = _deep_merge(template_data, data)
+                
+        return data
     except Exception as e:
         log("WARNING", f"Failed to parse YAML file {path}: {e}")
         return {}
@@ -175,41 +192,47 @@ def save_yaml(data: Dict[str, Any], path: str) -> None:
 
 # --- Windows persistent user variable helpers ---
 
+def _legacy_env_get_windows(name: str) -> Optional[str]:
+    try:
+        # Escape single quotes for PowerShell
+        safe_name = name.replace("'", "''")
+        cmd = f"[System.Environment]::GetEnvironmentVariable('{safe_name}', 'User')"
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", cmd],
+            capture_output=True, text=True, check=True,
+        )
+        val = res.stdout.strip()
+        if val:
+            return val
+    except subprocess.CalledProcessError as e:
+        log("WARNING", f"Failed to get env variable {name}: {e}")
+    except Exception as e:
+        log("WARNING", f"Unexpected error getting env variable {name}: {e}")
+    return None
+
+def _legacy_env_get_unix(name: str) -> Optional[str]:
+    env_file = os.path.expanduser("~/.airm_env")
+    if os.path.exists(env_file):
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith(f"export {name}="):
+                        # Extract value inside quotes if present
+                        val = line.split("=", 1)[1].strip()
+                        if val.startswith('"') and val.endswith('"'):
+                            return val[1:-1]
+                        if val.startswith("'") and val.endswith("'"):
+                            return val[1:-1]
+                        return val
+        except Exception as e:
+            log("WARNING", f"Failed to read env file: {e}")
+    return None
+
 def _legacy_env_get(name: str) -> Optional[str]:
     """Legacy plaintext lookup: Windows user registry / ~/.airm_env."""
     if platform.system() == "Windows":
-        try:
-            # Escape single quotes for PowerShell
-            safe_name = name.replace("'", "''")
-            cmd = f"[System.Environment]::GetEnvironmentVariable('{safe_name}', 'User')"
-            res = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", cmd],
-                capture_output=True, text=True, check=True,
-            )
-            val = res.stdout.strip()
-            if val:
-                return val
-        except subprocess.CalledProcessError as e:
-            log("WARNING", f"Failed to get env variable {name}: {e}")
-        except Exception as e:
-            log("WARNING", f"Unexpected error getting env variable {name}: {e}")
-    else:
-        env_file = os.path.expanduser("~/.airm_env")
-        if os.path.exists(env_file):
-            try:
-                with open(env_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.startswith(f"export {name}="):
-                            # Extract value inside quotes if present
-                            val = line.split("=", 1)[1].strip()
-                            if val.startswith('"') and val.endswith('"'):
-                                return val[1:-1]
-                            if val.startswith("'") and val.endswith("'"):
-                                return val[1:-1]
-                            return val
-            except Exception as e:
-                log("WARNING", f"Failed to read env file: {e}")
-    return None
+        return _legacy_env_get_windows(name)
+    return _legacy_env_get_unix(name)
 
 
 def get_windows_env(name: str) -> Optional[str]:
@@ -234,58 +257,63 @@ def get_windows_env(name: str) -> Optional[str]:
     return os.environ.get(name)
 
 
+def _legacy_env_set_windows(name: str, value: str) -> bool:
+    try:
+        # Escape single quotes for PowerShell to prevent injection
+        safe_name = name.replace("'", "''")
+        safe_value = value.replace("'", "''")
+        cmd = (
+            f"[System.Environment]::SetEnvironmentVariable("
+            f"'{safe_name}', '{safe_value}', 'User')"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", cmd],
+            capture_output=True, check=True,
+        )
+        os.environ[name] = value
+        return True
+    except subprocess.CalledProcessError as e:
+        log("ERROR", f"Failed to save env variable {name}: {e}")
+        return False
+    except Exception as e:
+        log("ERROR", f"Unexpected error saving env variable {name}: {e}")
+        return False
+
+def _legacy_env_set_unix(name: str, value: str) -> bool:
+    env_file = os.path.expanduser("~/.airm_env")
+    try:
+        lines = []
+        if os.path.exists(env_file):
+            with open(env_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+        new_lines = []
+        found = False
+        for line in lines:
+            if line.startswith(f"export {name}="):
+                new_lines.append(f'export {name}="{value}"\n')
+                found = True
+            else:
+                new_lines.append(line)
+        if not found:
+            new_lines.append(f'export {name}="{value}"\n')
+
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+
+        os.environ[name] = value
+        return True
+    except Exception as e:
+        log("ERROR", f"Failed to save env variable {name}: {e}")
+        return False
+
 def _legacy_env_set(name: str, value: str) -> bool:
     """Legacy plaintext write: Windows user registry / ~/.airm_env.
 
     Only used as a fallback when no OS credential store is available."""
     if platform.system() == "Windows":
-        try:
-            # Escape single quotes for PowerShell to prevent injection
-            safe_name = name.replace("'", "''")
-            safe_value = value.replace("'", "''")
-            cmd = (
-                f"[System.Environment]::SetEnvironmentVariable("
-                f"'{safe_name}', '{safe_value}', 'User')"
-            )
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", cmd],
-                capture_output=True, check=True,
-            )
-            os.environ[name] = value
-            return True
-        except subprocess.CalledProcessError as e:
-            log("ERROR", f"Failed to save env variable {name}: {e}")
-            return False
-        except Exception as e:
-            log("ERROR", f"Unexpected error saving env variable {name}: {e}")
-            return False
-    else:
-        env_file = os.path.expanduser("~/.airm_env")
-        try:
-            lines = []
-            if os.path.exists(env_file):
-                with open(env_file, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-
-            new_lines = []
-            found = False
-            for line in lines:
-                if line.startswith(f"export {name}="):
-                    new_lines.append(f'export {name}="{value}"\n')
-                    found = True
-                else:
-                    new_lines.append(line)
-            if not found:
-                new_lines.append(f'export {name}="{value}"\n')
-
-            with open(env_file, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-
-            os.environ[name] = value
-            return True
-        except Exception as e:
-            log("ERROR", f"Failed to save env variable {name}: {e}")
-            return False
+        return _legacy_env_set_windows(name, value)
+    return _legacy_env_set_unix(name, value)
 
 
 def set_windows_env(name: str, value: str) -> bool:
@@ -344,16 +372,17 @@ def _compile_litellm_config(settings: Dict[str, Any], providers: Dict[str, Any],
         p_cfg = providers.get(provider, {})
         if isinstance(p_cfg, dict) and p_cfg.get("enabled", False):
             env_var = p_cfg.get("env_var")
-            key_val = get_windows_env(env_var)
-            if key_val:
-                litellm_models.append({
-                    "model_name": m.get("id"),
-                    "litellm_params": {
-                        "model": m.get("litellm_model"),
-                        "api_key": f"os.environ/{env_var}",
-                    },
-                })
-                active_model_ids.add(m.get("id"))
+            if isinstance(env_var, str):
+                key_val = get_windows_env(env_var)
+                if key_val:
+                    litellm_models.append({
+                        "model_name": m.get("id"),
+                        "litellm_params": {
+                            "model": m.get("litellm_model"),
+                            "api_key": f"os.environ/{env_var}",
+                        },
+                    })
+                    active_model_ids.add(m.get("id"))
 
     ollama_api: str = settings.get("ollama", {}).get("api_base", "http://127.0.0.1:11434")
     for om in ollama_models:
@@ -395,8 +424,10 @@ def _compile_openclaw_config(settings: Dict[str, Any], providers: Dict[str, Any]
     for m in models_reg.get("models", []):
         provider = m.get("provider")
         p_cfg = providers.get(provider, {})
-        if isinstance(p_cfg, dict) and p_cfg.get("enabled", False) and get_windows_env(p_cfg.get("env_var")):
-            openclaw_models.append({
+        if isinstance(p_cfg, dict) and p_cfg.get("enabled", False):
+            env_var = p_cfg.get("env_var")
+            if isinstance(env_var, str) and get_windows_env(env_var):
+                openclaw_models.append({
                 "id": m.get("id"),
                 "name": m.get("name"),
                 "contextWindow": m.get("context_window", 4096),

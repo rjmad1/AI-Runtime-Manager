@@ -24,7 +24,7 @@ def log_error(msg):
 
 # ANSI colors fallback for windows cmd
 if platform.system() == "Windows":
-    os.system('color')
+    subprocess.run('color', shell=True, check=False)
 
 def run_cmd(cmd, cwd=None, capture=False):
     try:
@@ -165,6 +165,15 @@ def main():
     install_openclaw(root_dir)
 
     log_success("Bootstrap phase completed successfully.")
+    
+    # 6. Launch Web Guided Assistant
+    log_info("Launching Web Guided Assistant...")
+    venv_python = get_venv_python(venv_dir)
+    try:
+        subprocess.check_call([venv_python, "-m", "core.manager", "install"], cwd=str(root_dir))
+    except subprocess.CalledProcessError as e:
+        log_error(f"Failed to launch Web Guided Assistant: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
