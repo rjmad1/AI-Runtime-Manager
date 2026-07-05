@@ -117,11 +117,11 @@ def install_python_deps(root_dir: Path, venv_dir: Path):
         success = run_cmd([uv_path, "pip", "install", "--python", venv_python, "-r", str(req_file)])
     else:
         success = run_cmd([venv_python, "-m", "pip", "install", "-r", str(req_file)])
-        
+
     if not success:
         log_error("Failed to install Python dependencies. Please check your network connection or build tools.")
         sys.exit(1)
-        
+
     log_success("Python dependencies installed.")
 
 def install_openclaw(root_dir: Path):
