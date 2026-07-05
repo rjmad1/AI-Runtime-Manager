@@ -161,13 +161,13 @@ def load_yaml(path: str) -> Dict[str, Any]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-            
+
         template_path = path.replace(".yaml", ".template.yaml")
         if os.path.exists(template_path) and path != template_path:
             with open(template_path, "r", encoding="utf-8") as tf:
                 template_data = yaml.safe_load(tf) or {}
                 data = _deep_merge(template_data, data)
-                
+
         return data
     except Exception as e:
         log("WARNING", f"Failed to parse YAML file {path}: {e}")

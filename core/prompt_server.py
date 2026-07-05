@@ -418,13 +418,13 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         """Handle POST requests."""
         self._drain_body()
-        
+
         # Public or self-authenticating routes
         if self.path == "/api/auth/check":
             if self._require_auth():
                 self._send_json({"success": True})
             return
-            
+
         public_handlers = {
             "/api/auth/login": self._handle_post_login,
             "/api/providers/validate": self._handle_post_providers_validate,
@@ -432,7 +432,7 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
             "/api/install": self._handle_post_install,
             "/api/control": self._handle_post_control,
         }
-        
+
         if self.path in public_handlers:
             public_handlers[self.path]()
             return
@@ -463,7 +463,7 @@ def run_prompt_server(port: int = 8500) -> None:
         manager.log("ERROR", str(e))
         return
     token = _get_auth_token()
-    
+
     httpd = None
     for attempt_port in range(port, port + 10):
         try:
@@ -472,7 +472,7 @@ def run_prompt_server(port: int = 8500) -> None:
             break
         except OSError:
             continue
-            
+
     if httpd is None:
         manager.log("ERROR", f"Could not find an open port for the web dashboard (tried {port}-{port+9}).")
         return

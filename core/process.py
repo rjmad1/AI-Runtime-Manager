@@ -390,12 +390,12 @@ def cmd_status() -> Dict[str, Any]:
     print("\n==============================================")
     print("      AIRM Server Daemon Status Dashboard")
     print("==============================================")
-    
+
     if l_status == 'ONLINE':
         l_ready_str = 'HEALTHY' if l_ready else 'UNRESPONSIVE'
     else:
         l_ready_str = 'N/A'
-        
+
     print(f"LiteLLM Proxy (Port {litellm_port}):     {l_status} (PID: {l_pid or 'N/A'}, Active on Port: {l_pids_on_port}, Readiness: {l_ready_str})")
     print(f"OpenClaw Gateway (Port {openclaw_port}):  {c_status} (PID: {c_pid or 'N/A'}, Active on Port: {c_pids_on_port})")
     print("==============================================")

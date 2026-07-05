@@ -2,7 +2,6 @@
 # Platform-agnostic environment bootstrap script.
 # Assumes Python 3.10+ is already installed.
 
-import os
 import platform
 import shutil
 import subprocess
@@ -165,7 +164,7 @@ def main():
     install_openclaw(root_dir)
 
     log_success("Bootstrap phase completed successfully.")
-    
+
     # 6. Launch Web Guided Assistant
     log_info("Launching Web Guided Assistant...")
     venv_python = get_venv_python(venv_dir)
