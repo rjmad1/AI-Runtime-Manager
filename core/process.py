@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import subprocess
+import tempfile
 import time
 import urllib.request
 from typing import Any, Dict, List, Optional
@@ -23,6 +24,45 @@ from .config import (
     load_yaml,
     log,
 )
+
+
+class ProcessLock:
+    def __init__(self, name: str):
+        self.lock_file = os.path.join(tempfile.gettempdir(), f"airm_{name}.lock")
+        self.fd: Any = None
+
+    def acquire(self) -> bool:
+        try:
+            self.fd = open(self.lock_file, 'w')
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(self.fd.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore
+            return True
+        except (IOError, OSError, ImportError):
+            if self.fd:
+                self.fd.close()
+                self.fd = None
+            return False
+
+    def release(self) -> None:
+        if self.fd:
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    self.fd.seek(0)
+                    msvcrt.locking(self.fd.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self.fd, fcntl.LOCK_UN)  # type: ignore
+            except Exception:
+                pass
+            finally:
+                self.fd.close()
+                self.fd = None
+
 
 
 def load_services_state() -> Dict[str, Optional[int]]:
@@ -139,11 +179,11 @@ def _spawn_litellm(litellm_port: int) -> subprocess.Popen:
 
     # Popen duplicates the handle into the child, so the parent's file object
     # is always closed here — repeated start/stop cycles must not leak fds.
-    with open(os.path.join(LOGS_DIR, "litellm.log"), "w", encoding="utf-8") as litellm_log:
+    with open(os.path.join(LOGS_DIR, "system.log"), "a", encoding="utf-8") as sys_log:
         try:
             litellm_flags = 0x00000008 | 0x00000200 | 0x01000000 if platform.system() == "Windows" else 0
             litellm_proc = subprocess.Popen(
-                litellm_args, stdout=litellm_log, stderr=litellm_log,
+                litellm_args, stdout=sys_log, stderr=sys_log,
                 creationflags=litellm_flags, close_fds=True,
             )
         except Exception as e:
@@ -195,12 +235,12 @@ def _spawn_openclaw(openclaw_port: int, discovery: Any, litellm_pid: int) -> sub
         openclaw_cmd_args = ["/c", "openclaw", "gateway", "--port", str(openclaw_port)]
 
     # Same handle discipline as _spawn_litellm: child inherits, parent closes.
-    with open(os.path.join(LOGS_DIR, "openclaw.log"), "w", encoding="utf-8") as openclaw_log:
+    with open(os.path.join(LOGS_DIR, "system.log"), "a", encoding="utf-8") as sys_log:
         try:
             openclaw_flags = 0x00000008 | 0x00000200 | 0x01000000 if platform.system() == "Windows" else 0
             openclaw_proc = subprocess.Popen(
                 [openclaw_exe] + openclaw_cmd_args,
-                stdout=openclaw_log, stderr=openclaw_log,
+                stdout=sys_log, stderr=sys_log,
                 creationflags=openclaw_flags, close_fds=True,
             )
         except Exception as e:
@@ -239,6 +279,28 @@ def cmd_start() -> None:
 
     if settings.get("lifecycle", {}).get("auto_cleanup_ports", True):
         scavenge_ports([litellm_port, openclaw_port])
+    else:
+        conflicts = []
+        if get_pids_on_port(litellm_port):
+            conflicts.append(litellm_port)
+        if get_pids_on_port(openclaw_port):
+            conflicts.append(openclaw_port)
+        if conflicts:
+            log("ERROR", f"Port collisions detected on {conflicts} and auto_cleanup_ports is False.")
+            raise RuntimeError(f"Port collision detected on {conflicts}.")
+
+    # Pre-flight VRAM Profiling
+    if settings.get("ollama", {}).get("enabled", False) and settings.get("ollama", {}).get("autostart", False):
+        log("INFO", "Performing Pre-flight VRAM Availability Profiling...")
+        try:
+            sys_details = discovery.run_all_discovery(SETTINGS_PATH)
+            ollama_models = sys_details.get("ollama", {}).get("models", [])
+            insufficient = [m for m in ollama_models if m.get("status") == "failed"]
+            if insufficient:
+                names = ", ".join([m["name"] for m in insufficient])
+                log("WARNING", f"VRAM Profiling: The following local models exceed system memory capacity and may crash: {names}")
+        except Exception as e:
+            log("WARNING", f"Pre-flight VRAM Profiling failed: {e}")
 
     # Setup process env for configuration injection
     os.environ["OPENCLAW_GATEWAY_PORT"] = str(openclaw_port)
@@ -367,17 +429,26 @@ def watch_loop(poll_seconds: int = 15, wait=time.sleep, should_stop=lambda: Fals
     """Core watchdog loop with injectable wait/stop hooks so it can run both
     interactively (cmd_watch) and inside an OS service (core/service.py)."""
     consecutive_failures = 0
-    while not should_stop():
-        if check_and_heal():
-            consecutive_failures = 0
-            delay = poll_seconds
-        else:
-            consecutive_failures += 1
-            # Exponential backoff, capped at 5 min, so a hard-broken stack
-            # is not restart-hammered in a tight loop.
-            delay = min(poll_seconds * (2 ** consecutive_failures), 300)
-            log("WARNING", f"Watchdog: stack still unhealthy ({consecutive_failures} consecutive failures). Next attempt in {delay}s.")
-        wait(delay)
+    lock = ProcessLock("watchdog")
+
+    if not lock.acquire():
+        log("ERROR", "Another watchdog process is already running. Exiting.")
+        return
+
+    try:
+        while not should_stop():
+            if check_and_heal():
+                consecutive_failures = 0
+                delay = poll_seconds
+            else:
+                consecutive_failures += 1
+                # Exponential backoff, capped at 5 min, so a hard-broken stack
+                # is not restart-hammered in a tight loop.
+                delay = min(poll_seconds * (2 ** consecutive_failures), 300)
+                log("WARNING", f"Watchdog: stack still unhealthy ({consecutive_failures} consecutive failures). Next attempt in {delay}s.")
+            wait(delay)
+    finally:
+        lock.release()
 
 
 def cmd_watch(poll_seconds: int = 15) -> None:

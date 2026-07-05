@@ -515,6 +515,18 @@ def cmd_configure() -> None:
         log("ERROR", "YAML settings files are missing or corrupted. Run 'Manage.bat repair' to restore them.")
         raise RuntimeError("YAML settings files are missing or corrupted.")
 
+    from pydantic import ValidationError
+
+    from .schemas import ModelsConfig, ProvidersConfig, SettingsConfig
+
+    try:
+        settings = SettingsConfig.model_validate(settings).model_dump()
+        providers = ProvidersConfig.model_validate(providers).model_dump()
+        models_reg = ModelsConfig.model_validate(models_reg).model_dump()
+    except ValidationError as e:
+        log("ERROR", f"Configuration schema validation failed: {e}")
+        raise RuntimeError("Configuration schema validation failed.")
+
     # Generate LiteLLM API key on first configure (empty string = not yet set)
     litellm_key = settings.get("litellm", {}).get("api_key", "")
     if not litellm_key:

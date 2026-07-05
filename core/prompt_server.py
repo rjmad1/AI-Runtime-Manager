@@ -250,17 +250,29 @@ class PromptRequestHandler(BaseHTTPRequestHandler):
         if self.path == "/":
             self._send_html(HTML_DASHBOARD)
         elif self.path == "/api/discovery":
+            if not self._require_auth("read"):
+                return
             self._handle_get_discovery()
         elif self.path == "/api/inventory":
+            if not self._require_auth("read"):
+                return
             self._send_json(_get_cached_inventory())
         elif self.path == "/api/providers":
+            if not self._require_auth("read"):
+                return
             self._handle_get_providers()
         elif self.path == "/api/status":
+            if not self._require_auth("read"):
+                return
             self._handle_get_status()
         elif self.path == "/api/install/status":
+            if not self._require_auth("read"):
+                return
             with _install_lock:
                 self._send_json(dict(INSTALL_STATE))
         elif self.path == "/api/backups":
+            if not self._require_auth("read"):
+                return
             self._handle_get_backups()
         else:
             self.send_error(404)

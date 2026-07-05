@@ -5,16 +5,23 @@ echo ==============================================
 echo       OpenClaw Workstation Installer
 echo ==============================================
 
-:: 1. Run low-level bootstrap powershell script
-powershell -ExecutionPolicy Bypass -File "%~dp0core\bootstrap.ps1"
+:: 1. Ensure Python 3 is available
+python --version >nul 2>&1
 if %ERRORLEVEL% neq 0 (
-    echo [ERROR] Low-level bootstrap failed. Exiting.
+    echo [INFO] Python not found. Attempting to install Python 3.11 via winget...
+    winget install --silent --accept-source-agreements --accept-package-agreements Python.Python.3.11
+    set "PATH=%PATH%;%LocalAppData%\Programs\Python\Python311"
+)
+
+:: 2. Run the centralized Python bootstrapper
+python "%~dp0core\bootstrap.py"
+if %ERRORLEVEL% neq 0 (
+    echo [ERROR] Python bootstrap failed. Exiting.
     pause
     exit /b 1
 )
 
-:: 2. Run the Python interactive installer in the .venv
-:: (run from repo root so `core` resolves as a package)
+:: 3. Run the Python interactive installer in the .venv
 if exist "%~dp0.venv\Scripts\python.exe" (
     pushd "%~dp0"
     ".venv\Scripts\python.exe" -m core.manager install
