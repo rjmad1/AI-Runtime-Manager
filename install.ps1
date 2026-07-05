@@ -39,6 +39,25 @@ Write-Host "[INFO] Using python: $pythonPath" -ForegroundColor Cyan
 $bootstrapScript = Join-Path $scriptDir "core\bootstrap.py"
 & $pythonPath $bootstrapScript
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] Python bootstrap failed." -ForegroundColor Red
+    Write-Host "`n==============================================" -ForegroundColor Red
+    Write-Host "             INSTALLATION SUMMARY" -ForegroundColor Red
+    Write-Host "==============================================" -ForegroundColor Red
+    Write-Host "[x] Core Prerequisites         : SKIPPED/FAILED" -ForegroundColor Red
+    Write-Host "[x] Python Environment         : FAILED" -ForegroundColor Red
+    Write-Host "[x] Dependencies               : FAILED" -ForegroundColor Red
+    Write-Host "==============================================" -ForegroundColor Red
+    Write-Host "[ERROR] Python bootstrap failed. Installation aborted." -ForegroundColor Red
     Exit 1
 }
+
+Write-Host "`n==============================================" -ForegroundColor Green
+Write-Host "             INSTALLATION SUMMARY" -ForegroundColor Green
+Write-Host "==============================================" -ForegroundColor Green
+Write-Host "[v] Core Prerequisites         : SUCCESS" -ForegroundColor Green
+Write-Host "[v] Python Environment         : SUCCESS" -ForegroundColor Green
+Write-Host "[v] Dependencies               : SUCCESS" -ForegroundColor Green
+Write-Host "[v] Web Guided Assistant       : SUCCESS" -ForegroundColor Green
+Write-Host "==============================================" -ForegroundColor Green
+Write-Host "[SUCCESS] OpenClaw Workstation installation completed successfully." -ForegroundColor Green
+Write-Host "You can manage your servers using manage.ps1 or Manage.bat." -ForegroundColor Green
+Write-Host ""

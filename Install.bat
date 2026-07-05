@@ -15,13 +15,29 @@ if %ERRORLEVEL% neq 0 (
 
 :: 2. Run the centralized Python bootstrapper
 python "%~dp0core\bootstrap.py"
-if %ERRORLEVEL% neq 0 (
-    echo [ERROR] Python bootstrap failed. Exiting.
+if errorlevel 1 (
+    echo.
+    echo ==============================================
+    echo              INSTALLATION SUMMARY
+    echo ==============================================
+    echo [x] Core Prerequisites         : SKIPPED/FAILED
+    echo [x] Python Environment         : FAILED
+    echo [x] Dependencies               : FAILED
+    echo ==============================================
+    echo [ERROR] Installation failed. See output above for details.
     pause
     exit /b 1
 )
 
 echo.
+echo ==============================================
+echo              INSTALLATION SUMMARY
+echo ==============================================
+echo [v] Core Prerequisites         : SUCCESS
+echo [v] Python Environment         : SUCCESS
+echo [v] Dependencies               : SUCCESS
+echo [v] Web Guided Assistant       : SUCCESS
+echo ==============================================
 echo [SUCCESS] OpenClaw Workstation installation completed successfully.
 echo You can manage your servers using Manage.bat.
 echo.

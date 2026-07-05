@@ -112,10 +112,16 @@ def install_python_deps(root_dir: Path, venv_dir: Path):
     venv_python = get_venv_python(venv_dir)
     uv_path = get_uv_path()
 
+    success = False
     if uv_path:
-        run_cmd([uv_path, "pip", "install", "--python", venv_python, "-r", str(req_file)])
+        success = run_cmd([uv_path, "pip", "install", "--python", venv_python, "-r", str(req_file)])
     else:
-        run_cmd([venv_python, "-m", "pip", "install", "-r", str(req_file)])
+        success = run_cmd([venv_python, "-m", "pip", "install", "-r", str(req_file)])
+        
+    if not success:
+        log_error("Failed to install Python dependencies. Please check your network connection or build tools.")
+        sys.exit(1)
+        
     log_success("Python dependencies installed.")
 
 def install_openclaw(root_dir: Path):
@@ -165,9 +171,19 @@ def main():
 
     log_success("Bootstrap phase completed successfully.")
 
+    venv_python = get_venv_python(venv_dir)
+
+    # Pre-flight validation
+    log_info("Validating dependencies before launch...")
+    try:
+        subprocess.check_call([venv_python, "-c", "import psutil, requests, yaml, litellm"], cwd=str(root_dir))
+        log_success("Dependencies validated successfully.")
+    except subprocess.CalledProcessError:
+        log_error("Dependency validation failed. Some required packages are missing.")
+        sys.exit(1)
+
     # 6. Launch Web Guided Assistant
     log_info("Launching Web Guided Assistant...")
-    venv_python = get_venv_python(venv_dir)
     try:
         subprocess.check_call([venv_python, "-m", "core.manager", "install"], cwd=str(root_dir))
     except subprocess.CalledProcessError as e:
