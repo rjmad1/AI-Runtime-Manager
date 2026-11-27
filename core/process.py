@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import psutil
 
+from .secret_ref import resolve_secret
 from .config import (
     LITELLM_CONFIG_PATH,
     LOGS_DIR,
@@ -304,7 +305,7 @@ def cmd_start() -> None:
     settings = load_yaml(SETTINGS_PATH)
     litellm_port: int = settings.get("litellm", {}).get("port", 4000)
     openclaw_port: int = settings.get("openclaw", {}).get("port", 18789)
-    litellm_key: str = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
+    litellm_key: str = resolve_secret(settings.get("litellm", {}).get("api_key", ""), "sk-litellm-key")
 
     _check_port_conflicts(settings, litellm_port, openclaw_port)
     _run_vram_profiling(settings, discovery)
@@ -327,7 +328,7 @@ def cmd_start() -> None:
 
     # Reload settings after cmd_configure to pick up rotated litellm key
     settings = load_yaml(SETTINGS_PATH)
-    litellm_key = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
+    litellm_key = resolve_secret(settings.get("litellm", {}).get("api_key", ""), "sk-litellm-key")
     os.environ["LITELLM_API_KEY"] = litellm_key
 
     litellm_proc = _spawn_litellm(litellm_port)
