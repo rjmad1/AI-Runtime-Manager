@@ -13,6 +13,8 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
+from .secret_ref import env_ref_name, resolve_secret
+
 # Safe YAML Loader
 try:
     import yaml
@@ -560,7 +562,10 @@ def cmd_configure() -> None:
 
     # Generate LiteLLM API key on first configure (empty string = not yet set)
     litellm_key = settings.get("litellm", {}).get("api_key", "")
-    if not litellm_key:
+    if env_ref_name(litellm_key):
+        # Env reference: validate it resolves (fail closed), never generate or persist a value.
+        resolve_secret(litellm_key)
+    elif not litellm_key:
         new_key = f"sk-airm-{secrets.token_hex(16)}"
         log("INFO", "Generating unique LiteLLM API key...")
         settings.setdefault("litellm", {})["api_key"] = new_key
