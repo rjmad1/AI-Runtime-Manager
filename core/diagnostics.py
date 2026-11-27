@@ -20,6 +20,7 @@ from .config import (
     log,
 )
 from .process import get_pids_on_port
+from .secret_ref import resolve_secret
 
 
 class LiteLLMOfflineError(RuntimeError):
@@ -97,7 +98,7 @@ def cmd_diagnose() -> Dict[str, Any]:
     models_reg = load_yaml(MODELS_PATH)
 
     litellm_port: int = settings.get("litellm", {}).get("port", 4000)
-    litellm_key: str = settings.get("litellm", {}).get("api_key", "sk-litellm-key")
+    litellm_key: str = resolve_secret(settings.get("litellm", {}).get("api_key", ""), "sk-litellm-key")
 
     sys_details = discovery.run_all_discovery(SETTINGS_PATH)
     tools = sys_details["tools"]
