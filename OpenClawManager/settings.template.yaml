@@ -1,7 +1,7 @@
 litellm:
   host: 127.0.0.1
   port: 4000
-  api_key: ""
+  api_key: "os.environ/LITELLM_API_KEY"  # set the LITELLM_API_KEY environment variable; never store the key here
   set_verbose: false
   drop_params: true
   routing_strategy: latency-based-routing
